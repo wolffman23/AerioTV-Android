@@ -21,7 +21,6 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
-import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.ts.TsExtractor
@@ -634,7 +633,7 @@ class AerioExoPlayerHolder @Inject constructor(
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(
                     autoDataSourceFactory,
-                    DefaultExtractorsFactory().setTsExtractorMode(TsExtractor.MODE_SINGLE_PMT),
+                    captionAwareTsExtractorsFactory(),
                 ),
             )
             // Request audio focus + declare media-usage attributes. WITHOUT
@@ -777,10 +776,9 @@ class AerioExoPlayerHolder @Inject constructor(
                 // (BBC HD vs SD on the same TS) which Dispatcharr / Xtream
                 // proxies never deliver.
                 //
-                // No additional FLAG_* on Media3 1.4 -- the only one
-                // available is FLAG_EMIT_RAW_SUBTITLE_DATA which we leave
-                // off (subtitle handling is task #66 and the parser
-                // factory route is cleaner anyway).
+                // Supply CEA-608 CC1 as a fallback when an IPTV remux keeps
+                // embedded SEI/A53 caption data but omits the PMT caption
+                // descriptor. Valid PMT descriptors still take precedence.
                 // TS-ONLY extractor factory (no container sniff). ProgressiveMediaSource's
                 // BundledExtractorsAdapter skips the sniff entirely when exactly one
                 // extractor is supplied. Sniffing the default 21 extractors against the
@@ -849,8 +847,7 @@ class AerioExoPlayerHolder @Inject constructor(
     /** TS-only extractor factory shared by the live raw-TS path and the
      *  timeshift buffer reader (same no-sniff rationale, see buildMediaSource). */
     private fun tsOnlyExtractorsFactory(): ExtractorsFactory = ExtractorsFactory {
-        val all: Array<Extractor> = DefaultExtractorsFactory()
-            .setTsExtractorMode(TsExtractor.MODE_SINGLE_PMT)
+        val all: Array<Extractor> = captionAwareTsExtractorsFactory()
             .createExtractors()
         val tsOnly: List<Extractor> = all.filterIsInstance<TsExtractor>()
         if (tsOnly.isNotEmpty()) tsOnly.toTypedArray() else all
@@ -1605,28 +1602,48 @@ class AerioExoPlayerHolder @Inject constructor(
         // ever selects the track. Distinguishes that from "stream has no audio
         // group at all" (a demux/remux problem, not a decoder gap).
         override fun onTracksChanged(tracks: Tracks) {
+            fun supportName(value: Int): String = when (value) {
+                C.FORMAT_HANDLED -> "HANDLED"
+                C.FORMAT_EXCEEDS_CAPABILITIES -> "EXCEEDS_CAPABILITIES"
+                C.FORMAT_UNSUPPORTED_DRM -> "UNSUPPORTED_DRM"
+                C.FORMAT_UNSUPPORTED_SUBTYPE -> "UNSUPPORTED_SUBTYPE"
+                C.FORMAT_UNSUPPORTED_TYPE -> "UNSUPPORTED_TYPE"
+                else -> "UNKNOWN"
+            }
+
             val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
             if (audioGroups.isEmpty()) {
                 Log.w(TAG, "ExoPlayer audio: stream exposes NO audio track group")
-                return
-            }
-            audioGroups.forEachIndexed { g, group ->
-                for (i in 0 until group.length) {
-                    val f = group.getTrackFormat(i)
-                    val support = when (group.getTrackSupport(i)) {
-                        C.FORMAT_HANDLED -> "HANDLED"
-                        C.FORMAT_EXCEEDS_CAPABILITIES -> "EXCEEDS_CAPABILITIES"
-                        C.FORMAT_UNSUPPORTED_DRM -> "UNSUPPORTED_DRM"
-                        C.FORMAT_UNSUPPORTED_SUBTYPE -> "UNSUPPORTED_SUBTYPE"
-                        C.FORMAT_UNSUPPORTED_TYPE -> "UNSUPPORTED_TYPE"
-                        else -> "UNKNOWN"
+            } else {
+                audioGroups.forEachIndexed { g, group ->
+                    for (i in 0 until group.length) {
+                        val f = group.getTrackFormat(i)
+                        Log.i(
+                            TAG,
+                            "ExoPlayer audio track g$g:$i -> ${f.sampleMimeType} " +
+                                "codecs=${f.codecs} ${f.channelCount}ch ${f.sampleRate}Hz " +
+                                "support=${supportName(group.getTrackSupport(i))} " +
+                                "selected=${group.isTrackSelected(i)}",
+                        )
                     }
-                    Log.i(
-                        TAG,
-                        "ExoPlayer audio track g$g:$i -> ${f.sampleMimeType} " +
-                            "codecs=${f.codecs} ${f.channelCount}ch ${f.sampleRate}Hz " +
-                            "support=$support selected=${group.isTrackSelected(i)}",
-                    )
+                }
+            }
+
+            val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+            if (textGroups.isEmpty()) {
+                Log.w(TAG, "ExoPlayer captions: stream exposes NO text track group")
+            } else {
+                textGroups.forEachIndexed { g, group ->
+                    for (i in 0 until group.length) {
+                        val f = group.getTrackFormat(i)
+                        Log.i(
+                            TAG,
+                            "ExoPlayer caption track g$g:$i -> ${f.sampleMimeType} " +
+                                "lang=${f.language} channel=${f.accessibilityChannel} " +
+                                "support=${supportName(group.getTrackSupport(i))} " +
+                                "selected=${group.isTrackSelected(i)}",
+                        )
+                    }
                 }
             }
         }

@@ -3,6 +3,7 @@ package com.aeriotv.android.feature.player
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
@@ -100,9 +101,26 @@ fun ExoPlayer.captureStreamInfo(): StreamInfoSnapshot {
 fun ExoPlayer.readSubtitleTracks(): List<SubtitleTrack> = readTracks(C.TRACK_TYPE_TEXT) { format, trackId ->
     SubtitleTrack(
         id = trackId,
-        title = format.label.orEmpty().ifBlank { format.id.orEmpty() },
+        title = subtitleTrackTitle(format),
         lang = format.language.orEmpty(),
     )
+}
+
+internal fun subtitleTrackTitle(format: Format): String {
+    val explicitLabel = format.label.orEmpty()
+    if (explicitLabel.isNotBlank()) return explicitLabel
+
+    return when (format.sampleMimeType) {
+        MimeTypes.APPLICATION_CEA608 -> format.accessibilityChannel
+            .takeIf { it > 0 }
+            ?.let { "Closed Captions CC$it" }
+            ?: "Closed Captions"
+        MimeTypes.APPLICATION_CEA708 -> format.accessibilityChannel
+            .takeIf { it > 0 }
+            ?.let { "Closed Captions Service $it" }
+            ?: "Closed Captions"
+        else -> format.id.orEmpty()
+    }
 }
 
 @OptIn(UnstableApi::class)

@@ -101,10 +101,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
-import androidx.media3.extractor.DefaultExtractorsFactory
-import androidx.media3.extractor.ts.TsExtractor
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.aeriotv.android.core.playback.captionAwareTsExtractorsFactory
 import com.aeriotv.android.feature.player.AudioTracksSheet
 import com.aeriotv.android.feature.player.SubtitlesSheet
 import com.aeriotv.android.feature.player.readAudioTracks
@@ -1774,8 +1773,7 @@ private fun buildTileMediaSource(
             HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
         url.endsWith(".ts", ignoreCase = true) ||
             url.contains("/proxy/ts/", ignoreCase = true) -> {
-            val extractors = DefaultExtractorsFactory()
-                .setTsExtractorMode(TsExtractor.MODE_SINGLE_PMT)
+            val extractors = captionAwareTsExtractorsFactory()
             ProgressiveMediaSource.Factory(dataSourceFactory, extractors)
                 .createMediaSource(mediaItem)
         }
