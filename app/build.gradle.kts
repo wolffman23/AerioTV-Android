@@ -82,6 +82,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".captiontest"
+            versionNameSuffix = "-caption-test"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
