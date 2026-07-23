@@ -6,6 +6,8 @@ import com.aeriotv.android.core.category.CategoryPaletteState
 import com.aeriotv.android.core.category.CustomCategoryEntry
 import com.aeriotv.android.core.category.ProgramCategory
 import com.aeriotv.android.core.network.TMDBService
+import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
+import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
 import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
 import com.aeriotv.android.core.preferences.AdaptiveQualityMode
 import com.aeriotv.android.core.preferences.AppPreferences
@@ -31,6 +33,7 @@ import kotlinx.coroutines.launch
 class SettingsViewModel @Inject constructor(
     private val prefs: AppPreferences,
     private val tmdb: TMDBService,
+    private val adaptarrClient: AdaptarrClient,
 ) : ViewModel() {
 
     // Appearance
@@ -292,8 +295,8 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { prefs.setEpgWindowHours(value) }
     }
 
-    // Adaptarr adaptive-quality settings are device-local. This task only
-    // persists and presents configuration; protocol calls land separately.
+    // Adaptarr adaptive-quality settings are device-local. Connection testing
+    // is read-only and cannot mutate playback or Dispatcharr state.
     val adaptarrEnabled: Flow<Boolean> = prefs.adaptarrEnabled
     fun setAdaptarrEnabled(value: Boolean) {
         viewModelScope.launch { prefs.setAdaptarrEnabled(value) }
@@ -329,26 +332,35 @@ class SettingsViewModel @Inject constructor(
         Idle,
         Saving,
         Saved,
+        Testing,
+        Connected,
         InvalidBaseUrl,
         InvalidToken,
+        InvalidConnectionSettings,
         EncryptionFailed,
         PersistenceFailed,
+        Unauthorized,
+        IncompatibleProtocol,
+        RateLimited,
+        ServiceUnavailable,
+        InvalidResponse,
+        Unreachable,
     }
 
     private val _adaptarrConnectionState = MutableStateFlow(AdaptarrConnectionState.Idle)
     val adaptarrConnectionState: StateFlow<AdaptarrConnectionState> =
         _adaptarrConnectionState.asStateFlow()
-    private var adaptarrSaveJob: Job? = null
+    private var adaptarrConnectionJob: Job? = null
 
     fun resetAdaptarrConnectionState() {
-        adaptarrSaveJob?.cancel()
-        adaptarrSaveJob = null
+        adaptarrConnectionJob?.cancel()
+        adaptarrConnectionJob = null
         _adaptarrConnectionState.value = AdaptarrConnectionState.Idle
     }
 
     fun saveAdaptarrConnection(baseUrl: String, token: String) {
-        adaptarrSaveJob?.cancel()
-        adaptarrSaveJob = viewModelScope.launch {
+        adaptarrConnectionJob?.cancel()
+        adaptarrConnectionJob = viewModelScope.launch {
             _adaptarrConnectionState.value = AdaptarrConnectionState.Saving
             _adaptarrConnectionState.value = try {
                 when (prefs.saveAdaptarrConnection(baseUrl, token)) {
@@ -361,6 +373,33 @@ class SettingsViewModel @Inject constructor(
                 throw cancelled
             } catch (_: Exception) {
                 AdaptarrConnectionState.PersistenceFailed
+            }
+        }
+    }
+
+    fun testAdaptarrConnection(baseUrl: String, token: String) {
+        adaptarrConnectionJob?.cancel()
+        adaptarrConnectionJob = viewModelScope.launch {
+            _adaptarrConnectionState.value = AdaptarrConnectionState.Testing
+            _adaptarrConnectionState.value = try {
+                when (adaptarrClient.testConnection(baseUrl, token)) {
+                    AdaptarrConnectionTestResult.Connected -> AdaptarrConnectionState.Connected
+                    AdaptarrConnectionTestResult.InvalidSettings ->
+                        AdaptarrConnectionState.InvalidConnectionSettings
+                    AdaptarrConnectionTestResult.Unauthorized -> AdaptarrConnectionState.Unauthorized
+                    AdaptarrConnectionTestResult.IncompatibleProtocol ->
+                        AdaptarrConnectionState.IncompatibleProtocol
+                    AdaptarrConnectionTestResult.RateLimited -> AdaptarrConnectionState.RateLimited
+                    AdaptarrConnectionTestResult.ServiceUnavailable ->
+                        AdaptarrConnectionState.ServiceUnavailable
+                    AdaptarrConnectionTestResult.InvalidResponse ->
+                        AdaptarrConnectionState.InvalidResponse
+                    AdaptarrConnectionTestResult.Unreachable -> AdaptarrConnectionState.Unreachable
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                AdaptarrConnectionState.InvalidResponse
             }
         }
     }

@@ -28,8 +28,8 @@ import com.aeriotv.android.ui.tv.tvFormFieldInput
 import java.util.Locale
 
 /**
- * Device-local Adaptarr configuration. This section deliberately performs no
- * protocol requests and cannot mutate playback or Dispatcharr state.
+ * Device-local Adaptarr configuration. Connection testing performs read-only
+ * health/config requests and cannot mutate playback or Dispatcharr state.
  */
 @Composable
 internal fun AdaptiveStreamingSettingsSection(
@@ -45,6 +45,7 @@ internal fun AdaptiveStreamingSettingsSection(
     connectionState: SettingsViewModel.AdaptarrConnectionState,
     onEnabledChange: (Boolean) -> Unit,
     onSaveConnection: (String, String) -> Unit,
+    onTestConnection: (String, String) -> Unit,
     onConnectionDraftChanged: () -> Unit,
     onModeChange: (AdaptiveQualityMode) -> Unit,
     onMaxHeightChange: (Int) -> Unit,
@@ -132,7 +133,7 @@ internal fun AdaptiveStreamingSettingsSection(
                             submittedDraft = baseUrlDraft to tokenDraft
                             onSaveConnection(baseUrlDraft, tokenDraft)
                         },
-                        enabled = connectionState != SettingsViewModel.AdaptarrConnectionState.Saving,
+                        enabled = !connectionState.isBusy(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
@@ -144,11 +145,17 @@ internal fun AdaptiveStreamingSettingsSection(
                         )
                     }
                     OutlinedButton(
-                        onClick = {},
-                        enabled = false,
+                        onClick = { onTestConnection(baseUrlDraft, tokenDraft) },
+                        enabled = !connectionState.isBusy(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Test Connection")
+                        Text(
+                            if (connectionState == SettingsViewModel.AdaptarrConnectionState.Testing) {
+                                "Testing…"
+                            } else {
+                                "Test Connection"
+                            },
+                        )
                     }
                 }
                 Text(
@@ -161,7 +168,7 @@ internal fun AdaptiveStreamingSettingsSection(
                     },
                 )
                 Text(
-                    text = "Connection testing becomes available with the Adaptarr protocol client.",
+                    text = "Test checks protocol compatibility and token access without saving or changing playback.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -263,21 +270,49 @@ private fun connectionStatusText(state: SettingsViewModel.AdaptarrConnectionStat
         SettingsViewModel.AdaptarrConnectionState.Idle -> "Save validates and stores the connection locally."
         SettingsViewModel.AdaptarrConnectionState.Saving -> "Saving locally…"
         SettingsViewModel.AdaptarrConnectionState.Saved -> "Connection settings saved securely."
+        SettingsViewModel.AdaptarrConnectionState.Testing -> "Checking Adaptarr…"
+        SettingsViewModel.AdaptarrConnectionState.Connected ->
+            "Connection verified. Protocol v1 and token access are valid."
         SettingsViewModel.AdaptarrConnectionState.InvalidBaseUrl ->
             "Enter a valid HTTP or HTTPS base URL without credentials, query, or fragment."
         SettingsViewModel.AdaptarrConnectionState.InvalidToken ->
             "Token must contain 32–512 non-whitespace characters."
+        SettingsViewModel.AdaptarrConnectionState.InvalidConnectionSettings ->
+            "Enter a valid HTTP or HTTPS URL and a 32–512 character token."
         SettingsViewModel.AdaptarrConnectionState.EncryptionFailed ->
             "The token could not be encrypted. Existing settings were kept."
         SettingsViewModel.AdaptarrConnectionState.PersistenceFailed ->
             "The connection could not be saved. Existing settings were kept."
+        SettingsViewModel.AdaptarrConnectionState.Unauthorized ->
+            "Adaptarr rejected the bearer token."
+        SettingsViewModel.AdaptarrConnectionState.IncompatibleProtocol ->
+            "This Adaptarr server does not support protocol v1."
+        SettingsViewModel.AdaptarrConnectionState.RateLimited ->
+            "Adaptarr is busy. Try the connection test again shortly."
+        SettingsViewModel.AdaptarrConnectionState.ServiceUnavailable ->
+            "Adaptarr is temporarily unavailable."
+        SettingsViewModel.AdaptarrConnectionState.InvalidResponse ->
+            "Adaptarr returned an invalid or unexpected response."
+        SettingsViewModel.AdaptarrConnectionState.Unreachable ->
+            "Adaptarr could not be reached. Check the address and network."
     }
 
 private fun SettingsViewModel.AdaptarrConnectionState.isError(): Boolean =
     this == SettingsViewModel.AdaptarrConnectionState.InvalidBaseUrl ||
         this == SettingsViewModel.AdaptarrConnectionState.InvalidToken ||
+        this == SettingsViewModel.AdaptarrConnectionState.InvalidConnectionSettings ||
         this == SettingsViewModel.AdaptarrConnectionState.EncryptionFailed ||
-        this == SettingsViewModel.AdaptarrConnectionState.PersistenceFailed
+        this == SettingsViewModel.AdaptarrConnectionState.PersistenceFailed ||
+        this == SettingsViewModel.AdaptarrConnectionState.Unauthorized ||
+        this == SettingsViewModel.AdaptarrConnectionState.IncompatibleProtocol ||
+        this == SettingsViewModel.AdaptarrConnectionState.RateLimited ||
+        this == SettingsViewModel.AdaptarrConnectionState.ServiceUnavailable ||
+        this == SettingsViewModel.AdaptarrConnectionState.InvalidResponse ||
+        this == SettingsViewModel.AdaptarrConnectionState.Unreachable
+
+private fun SettingsViewModel.AdaptarrConnectionState.isBusy(): Boolean =
+    this == SettingsViewModel.AdaptarrConnectionState.Saving ||
+        this == SettingsViewModel.AdaptarrConnectionState.Testing
 
 internal fun throughputLabel(bitsPerSecond: Long): String =
     if (bitsPerSecond <= 0L) {

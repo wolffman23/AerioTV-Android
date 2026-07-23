@@ -117,6 +117,7 @@ fun NetworkSettingsScreen(
                 connectionState = adaptarrConnectionState,
                 onEnabledChange = viewModel::setAdaptarrEnabled,
                 onSaveConnection = viewModel::saveAdaptarrConnection,
+                onTestConnection = viewModel::testAdaptarrConnection,
                 onConnectionDraftChanged = viewModel::resetAdaptarrConnectionState,
                 onModeChange = viewModel::setAdaptiveQualityMode,
                 onMaxHeightChange = viewModel::setAdaptiveMaxHeight,
