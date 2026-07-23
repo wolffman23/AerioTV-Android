@@ -130,6 +130,10 @@ android {
             useLegacyPackaging = false
         }
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 kotlin {
@@ -234,4 +238,9 @@ dependencies {
     implementation(libs.androidx.profileinstaller)
 
     debugImplementation(libs.androidx.ui.tooling)
+    testImplementation(libs.junit4)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.mockk)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

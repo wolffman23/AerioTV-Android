@@ -61,21 +61,41 @@ class CredentialCipher @Inject constructor() {
         if (plaintext.isNullOrEmpty()) return plaintext
         if (plaintext.startsWith(PREFIX)) return plaintext
         return try {
-            val cipher = Cipher.getInstance(TRANSFORM)
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey())
-            val iv = cipher.iv
-            val ct = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
-            val combined = ByteArray(iv.size + ct.size)
-            System.arraycopy(iv, 0, combined, 0, iv.size)
-            System.arraycopy(ct, 0, combined, iv.size, ct.size)
-            PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
+            encryptValue(plaintext)
         } catch (t: Throwable) {
-            // Storing plaintext is strictly better than dropping the credential
-            // (which would silently break the user's server). The bulk re-encrypt
-            // pass + the next successful write will pick it up later.
+            // Preserve the legacy availability behavior for existing credentials.
             Log.e(TAG, "encrypt failed; persisting value unencrypted this time", t)
             plaintext
         }
+    }
+
+    /**
+     * Encrypt a known-clear credential without any plaintext fallback.
+     *
+     * Unlike [encrypt], this method does not treat the ciphertext prefix as an
+     * already-encrypted value: caller input may legitimately begin with that
+     * string. It returns null on any Keystore/cipher failure so security-sensitive
+     * callers can leave the previous ciphertext untouched.
+     */
+    fun encryptStrict(plaintext: String): String? {
+        if (plaintext.isEmpty()) return plaintext
+        return try {
+            encryptValue(plaintext)
+        } catch (t: Throwable) {
+            Log.e(TAG, "strict credential encryption failed", t)
+            null
+        }
+    }
+
+    private fun encryptValue(plaintext: String): String {
+        val cipher = Cipher.getInstance(TRANSFORM)
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey())
+        val iv = cipher.iv
+        val ct = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+        val combined = ByteArray(iv.size + ct.size)
+        System.arraycopy(iv, 0, combined, 0, iv.size)
+        System.arraycopy(ct, 0, combined, iv.size, ct.size)
+        return PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
     }
 
     /**

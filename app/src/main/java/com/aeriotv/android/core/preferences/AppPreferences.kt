@@ -564,6 +564,115 @@ class AppPreferences @Inject constructor(
         store.edit { it[KEY_EPG_WINDOW_HOURS] = value }
     }
 
+    // ── Adaptive quality / Adaptarr ──────────────────────────────────────
+    // These values are device-local and intentionally excluded from Drive sync.
+
+    val adaptarrEnabled: Flow<Boolean> = store.data.map { it[KEY_ADAPTARR_ENABLED] ?: false }
+    suspend fun setAdaptarrEnabled(value: Boolean) {
+        store.edit { it[KEY_ADAPTARR_ENABLED] = value }
+    }
+
+    val adaptarrBaseUrl: Flow<String> = store.data.map { prefs ->
+        normalizeAdaptarrBaseUrl(prefs[KEY_ADAPTARR_BASE_URL].orEmpty()) ?: ""
+    }
+    suspend fun setAdaptarrBaseUrl(value: String): Boolean {
+        val normalized = normalizeAdaptarrBaseUrl(value) ?: return false
+        store.edit { prefs ->
+            if (normalized.isEmpty()) prefs.remove(KEY_ADAPTARR_BASE_URL)
+            else prefs[KEY_ADAPTARR_BASE_URL] = normalized
+        }
+        return true
+    }
+
+    val adaptarrToken: Flow<String> = store.data.map { prefs ->
+        val cleartext = cipher.decrypt(prefs[KEY_ADAPTARR_TOKEN]) ?: return@map ""
+        normalizeAdaptarrToken(cleartext) ?: ""
+    }
+    suspend fun setAdaptarrToken(value: String): Boolean {
+        val normalized = normalizeAdaptarrToken(value) ?: return false
+        if (normalized.isEmpty()) {
+            store.edit { it.remove(KEY_ADAPTARR_TOKEN) }
+            return true
+        }
+        val encrypted = cipher.encryptStrict(normalized) ?: return false
+        store.edit { it[KEY_ADAPTARR_TOKEN] = encrypted }
+        return true
+    }
+
+    suspend fun saveAdaptarrConnection(
+        baseUrl: String,
+        token: String,
+    ): AdaptarrConnectionSaveResult {
+        val normalizedUrl = normalizeAdaptarrBaseUrl(baseUrl)
+            ?: return AdaptarrConnectionSaveResult.InvalidBaseUrl
+        val normalizedToken = normalizeAdaptarrToken(token)
+            ?: return AdaptarrConnectionSaveResult.InvalidToken
+        val encryptedToken = if (normalizedToken.isEmpty()) {
+            null
+        } else {
+            cipher.encryptStrict(normalizedToken)
+                ?: return AdaptarrConnectionSaveResult.EncryptionFailed
+        }
+        store.edit { prefs ->
+            if (normalizedUrl.isEmpty()) prefs.remove(KEY_ADAPTARR_BASE_URL)
+            else prefs[KEY_ADAPTARR_BASE_URL] = normalizedUrl
+            if (encryptedToken == null) prefs.remove(KEY_ADAPTARR_TOKEN)
+            else prefs[KEY_ADAPTARR_TOKEN] = encryptedToken
+        }
+        return AdaptarrConnectionSaveResult.Saved
+    }
+
+    val adaptiveQualityMode: Flow<AdaptiveQualityMode> = store.data.map { prefs ->
+        AdaptiveQualityMode.fromWire(prefs[KEY_ADAPTIVE_QUALITY_MODE])
+    }
+    suspend fun setAdaptiveQualityMode(value: AdaptiveQualityMode) {
+        val effective = if (value == AdaptiveQualityMode.Auto) {
+            AdaptiveQualityMode.Off
+        } else {
+            value
+        }
+        store.edit { it[KEY_ADAPTIVE_QUALITY_MODE] = effective.wire }
+    }
+
+    val adaptiveMaxHeight: Flow<Int> = store.data.map { prefs ->
+        normalizeAdaptiveHeight(prefs[KEY_ADAPTIVE_MAX_HEIGHT] ?: 1080)
+    }
+    suspend fun setAdaptiveMaxHeight(value: Int) {
+        store.edit { it[KEY_ADAPTIVE_MAX_HEIGHT] = normalizeAdaptiveHeight(value) }
+    }
+
+    val adaptiveCellularMaxHeight: Flow<Int> = store.data.map { prefs ->
+        normalizeAdaptiveHeight(prefs[KEY_ADAPTIVE_CELLULAR_MAX_HEIGHT] ?: 720)
+    }
+    suspend fun setAdaptiveCellularMaxHeight(value: Int) {
+        store.edit { it[KEY_ADAPTIVE_CELLULAR_MAX_HEIGHT] = normalizeAdaptiveHeight(value) }
+    }
+
+    val adaptiveFallbackHeight: Flow<Int> = store.data.map { prefs ->
+        normalizeAdaptiveHeight(prefs[KEY_ADAPTIVE_FALLBACK_HEIGHT] ?: 720)
+    }
+    suspend fun setAdaptiveFallbackHeight(value: Int) {
+        store.edit { it[KEY_ADAPTIVE_FALLBACK_HEIGHT] = normalizeAdaptiveHeight(value) }
+    }
+
+    val adaptarrLastMeasuredThroughputBps: Flow<Long> = store.data.map { prefs ->
+        (prefs[KEY_ADAPTARR_LAST_MEASURED_THROUGHPUT_BPS] ?: 0L).coerceAtLeast(0L)
+    }
+    suspend fun setAdaptarrLastMeasuredThroughputBps(value: Long) {
+        store.edit { it[KEY_ADAPTARR_LAST_MEASURED_THROUGHPUT_BPS] = value.coerceAtLeast(0L) }
+    }
+
+    val adaptarrLastDecision: Flow<String> = store.data.map { prefs ->
+        sanitizeAdaptarrDecision(prefs[KEY_ADAPTARR_LAST_DECISION].orEmpty())
+    }
+    suspend fun setAdaptarrLastDecision(value: String) {
+        val sanitized = sanitizeAdaptarrDecision(value)
+        store.edit { prefs ->
+            if (sanitized.isEmpty()) prefs.remove(KEY_ADAPTARR_LAST_DECISION)
+            else prefs[KEY_ADAPTARR_LAST_DECISION] = sanitized
+        }
+    }
+
     // ── Multiview ────────────────────────────────────────────────────────
 
     /**
@@ -1233,6 +1342,18 @@ class AppPreferences @Inject constructor(
         val KEY_MAX_RETRIES = intPreferencesKey("max_retries")
         val KEY_STREAM_BUFFER_SIZE = stringPreferencesKey("stream_buffer_size")
         val KEY_EPG_WINDOW_HOURS = intPreferencesKey("epg_window_hours")
+        // Adaptarr and adaptive quality state is private to this device and is
+        // deliberately absent from snapshotSyncablePreferences/applySyncedPreferences.
+        val KEY_ADAPTARR_ENABLED = booleanPreferencesKey("adaptarr_enabled")
+        val KEY_ADAPTARR_BASE_URL = stringPreferencesKey("adaptarr_base_url")
+        val KEY_ADAPTARR_TOKEN = stringPreferencesKey("adaptarr_token")
+        val KEY_ADAPTIVE_QUALITY_MODE = stringPreferencesKey("adaptive_quality_mode")
+        val KEY_ADAPTIVE_MAX_HEIGHT = intPreferencesKey("adaptive_max_height")
+        val KEY_ADAPTIVE_CELLULAR_MAX_HEIGHT = intPreferencesKey("adaptive_cellular_max_height")
+        val KEY_ADAPTIVE_FALLBACK_HEIGHT = intPreferencesKey("adaptive_fallback_height")
+        val KEY_ADAPTARR_LAST_MEASURED_THROUGHPUT_BPS =
+            longPreferencesKey("adaptarr_last_measured_throughput_bps")
+        val KEY_ADAPTARR_LAST_DECISION = stringPreferencesKey("adaptarr_last_decision")
         val KEY_MULTIVIEW_AUDIO_FOCUS_STYLE = stringPreferencesKey("multiview_audio_focus_style")
         val KEY_MULTIVIEW_TILE_PADDING = booleanPreferencesKey("multiview_tile_padding")
         val KEY_MULTIVIEW_TILE_CORNERS_ROUNDED = booleanPreferencesKey("multiview_tile_corners_rounded")

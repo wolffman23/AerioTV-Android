@@ -6,11 +6,15 @@ import com.aeriotv.android.core.category.CategoryPaletteState
 import com.aeriotv.android.core.category.CustomCategoryEntry
 import com.aeriotv.android.core.category.ProgramCategory
 import com.aeriotv.android.core.network.TMDBService
+import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
+import com.aeriotv.android.core.preferences.AdaptiveQualityMode
 import com.aeriotv.android.core.preferences.AppPreferences
 import com.aeriotv.android.ui.theme.AppTheme
 import com.aeriotv.android.ui.theme.AppearanceMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -286,6 +290,79 @@ class SettingsViewModel @Inject constructor(
     val epgWindowHours: Flow<Int> = prefs.epgWindowHours
     fun setEpgWindowHours(value: Int) {
         viewModelScope.launch { prefs.setEpgWindowHours(value) }
+    }
+
+    // Adaptarr adaptive-quality settings are device-local. This task only
+    // persists and presents configuration; protocol calls land separately.
+    val adaptarrEnabled: Flow<Boolean> = prefs.adaptarrEnabled
+    fun setAdaptarrEnabled(value: Boolean) {
+        viewModelScope.launch { prefs.setAdaptarrEnabled(value) }
+    }
+
+    val adaptarrBaseUrl: Flow<String> = prefs.adaptarrBaseUrl
+    val adaptarrToken: Flow<String> = prefs.adaptarrToken
+    val adaptiveQualityMode: Flow<AdaptiveQualityMode> = prefs.adaptiveQualityMode
+    fun setAdaptiveQualityMode(value: AdaptiveQualityMode) {
+        viewModelScope.launch { prefs.setAdaptiveQualityMode(value) }
+    }
+
+    val adaptiveMaxHeight: Flow<Int> = prefs.adaptiveMaxHeight
+    fun setAdaptiveMaxHeight(value: Int) {
+        viewModelScope.launch { prefs.setAdaptiveMaxHeight(value) }
+    }
+
+    val adaptiveCellularMaxHeight: Flow<Int> = prefs.adaptiveCellularMaxHeight
+    fun setAdaptiveCellularMaxHeight(value: Int) {
+        viewModelScope.launch { prefs.setAdaptiveCellularMaxHeight(value) }
+    }
+
+    val adaptiveFallbackHeight: Flow<Int> = prefs.adaptiveFallbackHeight
+    fun setAdaptiveFallbackHeight(value: Int) {
+        viewModelScope.launch { prefs.setAdaptiveFallbackHeight(value) }
+    }
+
+    val adaptarrLastMeasuredThroughputBps: Flow<Long> =
+        prefs.adaptarrLastMeasuredThroughputBps
+    val adaptarrLastDecision: Flow<String> = prefs.adaptarrLastDecision
+
+    enum class AdaptarrConnectionState {
+        Idle,
+        Saving,
+        Saved,
+        InvalidBaseUrl,
+        InvalidToken,
+        EncryptionFailed,
+        PersistenceFailed,
+    }
+
+    private val _adaptarrConnectionState = MutableStateFlow(AdaptarrConnectionState.Idle)
+    val adaptarrConnectionState: StateFlow<AdaptarrConnectionState> =
+        _adaptarrConnectionState.asStateFlow()
+    private var adaptarrSaveJob: Job? = null
+
+    fun resetAdaptarrConnectionState() {
+        adaptarrSaveJob?.cancel()
+        adaptarrSaveJob = null
+        _adaptarrConnectionState.value = AdaptarrConnectionState.Idle
+    }
+
+    fun saveAdaptarrConnection(baseUrl: String, token: String) {
+        adaptarrSaveJob?.cancel()
+        adaptarrSaveJob = viewModelScope.launch {
+            _adaptarrConnectionState.value = AdaptarrConnectionState.Saving
+            _adaptarrConnectionState.value = try {
+                when (prefs.saveAdaptarrConnection(baseUrl, token)) {
+                    AdaptarrConnectionSaveResult.Saved -> AdaptarrConnectionState.Saved
+                    AdaptarrConnectionSaveResult.InvalidBaseUrl -> AdaptarrConnectionState.InvalidBaseUrl
+                    AdaptarrConnectionSaveResult.InvalidToken -> AdaptarrConnectionState.InvalidToken
+                    AdaptarrConnectionSaveResult.EncryptionFailed -> AdaptarrConnectionState.EncryptionFailed
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                AdaptarrConnectionState.PersistenceFailed
+            }
+        }
     }
 
     // Audit task #48: master toggle for the periodic PlaylistRefreshWorker.
