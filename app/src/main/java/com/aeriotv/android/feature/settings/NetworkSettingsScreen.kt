@@ -84,6 +84,7 @@ fun NetworkSettingsScreen(
         .collectAsStateWithLifecycle(initialValue = 0L)
     val lastDecision by viewModel.adaptarrLastDecision.collectAsStateWithLifecycle(initialValue = "")
     val adaptarrConnectionState by viewModel.adaptarrConnectionState.collectAsStateWithLifecycle()
+    val adaptarrProbeState by viewModel.adaptarrProbeState.collectAsStateWithLifecycle()
 
     TvKeyboardOnOkHost {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -115,9 +116,11 @@ fun NetworkSettingsScreen(
                 lastMeasuredThroughputBps = lastMeasuredThroughputBps,
                 lastDecision = lastDecision,
                 connectionState = adaptarrConnectionState,
+                probeState = adaptarrProbeState,
                 onEnabledChange = viewModel::setAdaptarrEnabled,
                 onSaveConnection = viewModel::saveAdaptarrConnection,
                 onTestConnection = viewModel::testAdaptarrConnection,
+                onRunSpeedTest = viewModel::runAdaptarrSpeedTest,
                 onConnectionDraftChanged = viewModel::resetAdaptarrConnectionState,
                 onModeChange = viewModel::setAdaptiveQualityMode,
                 onMaxHeightChange = viewModel::setAdaptiveMaxHeight,

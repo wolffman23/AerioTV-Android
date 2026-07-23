@@ -43,9 +43,11 @@ internal fun AdaptiveStreamingSettingsSection(
     lastMeasuredThroughputBps: Long,
     lastDecision: String,
     connectionState: SettingsViewModel.AdaptarrConnectionState,
+    probeState: SettingsViewModel.AdaptarrProbeState,
     onEnabledChange: (Boolean) -> Unit,
     onSaveConnection: (String, String) -> Unit,
     onTestConnection: (String, String) -> Unit,
+    onRunSpeedTest: (String, String) -> Unit,
     onConnectionDraftChanged: () -> Unit,
     onModeChange: (AdaptiveQualityMode) -> Unit,
     onMaxHeightChange: (Int) -> Unit,
@@ -133,7 +135,7 @@ internal fun AdaptiveStreamingSettingsSection(
                             submittedDraft = baseUrlDraft to tokenDraft
                             onSaveConnection(baseUrlDraft, tokenDraft)
                         },
-                        enabled = !connectionState.isBusy(),
+                        enabled = !connectionState.isBusy() && !probeState.isBusy(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
@@ -146,7 +148,7 @@ internal fun AdaptiveStreamingSettingsSection(
                     }
                     OutlinedButton(
                         onClick = { onTestConnection(baseUrlDraft, tokenDraft) },
-                        enabled = !connectionState.isBusy(),
+                        enabled = !connectionState.isBusy() && !probeState.isBusy(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
@@ -154,6 +156,19 @@ internal fun AdaptiveStreamingSettingsSection(
                                 "Testing…"
                             } else {
                                 "Test Connection"
+                            },
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { onRunSpeedTest(baseUrlDraft, tokenDraft) },
+                        enabled = !connectionState.isBusy() && !probeState.isBusy(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (probeState == SettingsViewModel.AdaptarrProbeState.Testing) {
+                                "Measuring…"
+                            } else {
+                                "Run Speed Test"
                             },
                         )
                     }
@@ -168,7 +183,16 @@ internal fun AdaptiveStreamingSettingsSection(
                     },
                 )
                 Text(
-                    text = "Test checks protocol compatibility and token access without saving or changing playback.",
+                    text = probeStatusText(probeState),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (probeState.isError()) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                Text(
+                    text = "Connection test is read-only. Speed test downloads 1.1 MB and changes neither playback nor server telemetry.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -265,6 +289,20 @@ private fun StatusValue(label: String, value: String) {
     }
 }
 
+private fun probeStatusText(state: SettingsViewModel.AdaptarrProbeState): String =
+    when (state) {
+        SettingsViewModel.AdaptarrProbeState.Idle -> "Speed has not been tested in this session."
+        SettingsViewModel.AdaptarrProbeState.Testing -> "Running bounded local speed test…"
+        SettingsViewModel.AdaptarrProbeState.MeasuredFresh -> "Speed measured successfully."
+        SettingsViewModel.AdaptarrProbeState.MeasuredCached ->
+            "Using the fresh measurement cached for this network."
+        SettingsViewModel.AdaptarrProbeState.Timeout -> "Speed test timed out after five seconds."
+        SettingsViewModel.AdaptarrProbeState.Unavailable ->
+            "Speed test failed. Check the saved address, token, and network."
+        SettingsViewModel.AdaptarrProbeState.NetworkChanged ->
+            "Network changed during the test. Run it again."
+    }
+
 private fun connectionStatusText(state: SettingsViewModel.AdaptarrConnectionState): String =
     when (state) {
         SettingsViewModel.AdaptarrConnectionState.Idle -> "Save validates and stores the connection locally."
@@ -309,6 +347,14 @@ private fun SettingsViewModel.AdaptarrConnectionState.isError(): Boolean =
         this == SettingsViewModel.AdaptarrConnectionState.ServiceUnavailable ||
         this == SettingsViewModel.AdaptarrConnectionState.InvalidResponse ||
         this == SettingsViewModel.AdaptarrConnectionState.Unreachable
+
+private fun SettingsViewModel.AdaptarrProbeState.isError(): Boolean =
+    this == SettingsViewModel.AdaptarrProbeState.Timeout ||
+        this == SettingsViewModel.AdaptarrProbeState.Unavailable ||
+        this == SettingsViewModel.AdaptarrProbeState.NetworkChanged
+
+private fun SettingsViewModel.AdaptarrProbeState.isBusy(): Boolean =
+    this == SettingsViewModel.AdaptarrProbeState.Testing
 
 private fun SettingsViewModel.AdaptarrConnectionState.isBusy(): Boolean =
     this == SettingsViewModel.AdaptarrConnectionState.Saving ||

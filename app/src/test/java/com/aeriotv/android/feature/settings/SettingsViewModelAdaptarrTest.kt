@@ -3,6 +3,11 @@ package com.aeriotv.android.feature.settings
 import com.aeriotv.android.core.network.TMDBService
 import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
 import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeMeasurement
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeSource
+import com.aeriotv.android.core.network.adaptarr.AdaptarrTelemetryConfidence
 import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
 import com.aeriotv.android.core.preferences.AppPreferences
 import io.mockk.coEvery
@@ -27,6 +32,7 @@ class SettingsViewModelAdaptarrTest {
     private lateinit var prefs: AppPreferences
     private lateinit var tmdb: TMDBService
     private lateinit var client: AdaptarrClient
+    private lateinit var probeCoordinator: AdaptiveProbeCoordinator
     private lateinit var viewModel: SettingsViewModel
 
     @Before
@@ -35,7 +41,8 @@ class SettingsViewModelAdaptarrTest {
         prefs = mockk(relaxed = true)
         tmdb = mockk(relaxed = true)
         client = mockk()
-        viewModel = SettingsViewModel(prefs, tmdb, client)
+        probeCoordinator = mockk()
+        viewModel = SettingsViewModel(prefs, tmdb, client, probeCoordinator)
     }
 
     @After
@@ -116,5 +123,50 @@ class SettingsViewModelAdaptarrTest {
         viewModel.saveAdaptarrConnection("https://two.local", "b".repeat(32))
         advanceUntilIdle()
         assertEquals(SettingsViewModel.AdaptarrConnectionState.Saved, viewModel.adaptarrConnectionState.value)
+    }
+
+    @Test
+    fun `speed test maps fresh cached timeout unavailable and stale results`() = runTest(dispatcher.scheduler) {
+        val measurement = AdaptiveProbeMeasurement(
+            networkKey = "a".repeat(64),
+            measuredThroughputBps = 8_000_000L,
+            sampleCount = 1,
+            confidence = AdaptarrTelemetryConfidence.Low,
+            measuredAtElapsedRealtimeMs = 100L,
+        )
+        val cases = listOf(
+            AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh) to
+                SettingsViewModel.AdaptarrProbeState.MeasuredFresh,
+            AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Cached) to
+                SettingsViewModel.AdaptarrProbeState.MeasuredCached,
+            AdaptiveProbeResult.Timeout to SettingsViewModel.AdaptarrProbeState.Timeout,
+            AdaptiveProbeResult.Unavailable to SettingsViewModel.AdaptarrProbeState.Unavailable,
+            AdaptiveProbeResult.Stale to SettingsViewModel.AdaptarrProbeState.NetworkChanged,
+        )
+        cases.forEach { (result, expected) ->
+            coEvery { probeCoordinator.probe(any(), any()) } returns result
+            viewModel.runAdaptarrSpeedTest("https://adaptarr.local", "t".repeat(32))
+            advanceUntilIdle()
+            assertEquals(expected, viewModel.adaptarrProbeState.value)
+        }
+    }
+
+    @Test
+    fun `speed test cancels connection test and draft reset cancels speed test`() = runTest(dispatcher.scheduler) {
+        coEvery { client.testConnection(any(), any()) } coAnswers { awaitCancellation() }
+        coEvery { probeCoordinator.probe(any(), any()) } coAnswers { awaitCancellation() }
+
+        viewModel.testAdaptarrConnection("https://adaptarr.local", "a".repeat(32))
+        runCurrent()
+        assertEquals(SettingsViewModel.AdaptarrConnectionState.Testing, viewModel.adaptarrConnectionState.value)
+
+        viewModel.runAdaptarrSpeedTest("https://adaptarr.local", "a".repeat(32))
+        runCurrent()
+        assertEquals(SettingsViewModel.AdaptarrProbeState.Testing, viewModel.adaptarrProbeState.value)
+
+        viewModel.resetAdaptarrConnectionState()
+        advanceUntilIdle()
+        assertEquals(SettingsViewModel.AdaptarrProbeState.Idle, viewModel.adaptarrProbeState.value)
+        assertEquals(SettingsViewModel.AdaptarrConnectionState.Idle, viewModel.adaptarrConnectionState.value)
     }
 }

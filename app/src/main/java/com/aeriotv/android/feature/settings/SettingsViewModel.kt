@@ -8,6 +8,9 @@ import com.aeriotv.android.core.category.ProgramCategory
 import com.aeriotv.android.core.network.TMDBService
 import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
 import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeSource
 import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
 import com.aeriotv.android.core.preferences.AdaptiveQualityMode
 import com.aeriotv.android.core.preferences.AppPreferences
@@ -34,6 +37,7 @@ class SettingsViewModel @Inject constructor(
     private val prefs: AppPreferences,
     private val tmdb: TMDBService,
     private val adaptarrClient: AdaptarrClient,
+    private val adaptiveProbeCoordinator: AdaptiveProbeCoordinator,
 ) : ViewModel() {
 
     // Appearance
@@ -347,20 +351,34 @@ class SettingsViewModel @Inject constructor(
         Unreachable,
     }
 
+    enum class AdaptarrProbeState {
+        Idle,
+        Testing,
+        MeasuredFresh,
+        MeasuredCached,
+        Timeout,
+        Unavailable,
+        NetworkChanged,
+    }
+
     private val _adaptarrConnectionState = MutableStateFlow(AdaptarrConnectionState.Idle)
     val adaptarrConnectionState: StateFlow<AdaptarrConnectionState> =
         _adaptarrConnectionState.asStateFlow()
+    private val _adaptarrProbeState = MutableStateFlow(AdaptarrProbeState.Idle)
+    val adaptarrProbeState: StateFlow<AdaptarrProbeState> = _adaptarrProbeState.asStateFlow()
     private var adaptarrConnectionJob: Job? = null
 
     fun resetAdaptarrConnectionState() {
         adaptarrConnectionJob?.cancel()
         adaptarrConnectionJob = null
         _adaptarrConnectionState.value = AdaptarrConnectionState.Idle
+        _adaptarrProbeState.value = AdaptarrProbeState.Idle
     }
 
     fun saveAdaptarrConnection(baseUrl: String, token: String) {
         adaptarrConnectionJob?.cancel()
         adaptarrConnectionJob = viewModelScope.launch {
+            _adaptarrProbeState.value = AdaptarrProbeState.Idle
             _adaptarrConnectionState.value = AdaptarrConnectionState.Saving
             _adaptarrConnectionState.value = try {
                 when (prefs.saveAdaptarrConnection(baseUrl, token)) {
@@ -380,6 +398,7 @@ class SettingsViewModel @Inject constructor(
     fun testAdaptarrConnection(baseUrl: String, token: String) {
         adaptarrConnectionJob?.cancel()
         adaptarrConnectionJob = viewModelScope.launch {
+            _adaptarrProbeState.value = AdaptarrProbeState.Idle
             _adaptarrConnectionState.value = AdaptarrConnectionState.Testing
             _adaptarrConnectionState.value = try {
                 when (adaptarrClient.testConnection(baseUrl, token)) {
@@ -400,6 +419,29 @@ class SettingsViewModel @Inject constructor(
                 throw cancelled
             } catch (_: Exception) {
                 AdaptarrConnectionState.InvalidResponse
+            }
+        }
+    }
+
+    fun runAdaptarrSpeedTest(baseUrl: String, token: String) {
+        adaptarrConnectionJob?.cancel()
+        adaptarrConnectionJob = viewModelScope.launch {
+            _adaptarrConnectionState.value = AdaptarrConnectionState.Idle
+            _adaptarrProbeState.value = AdaptarrProbeState.Testing
+            _adaptarrProbeState.value = try {
+                when (val result = adaptiveProbeCoordinator.probe(baseUrl, token)) {
+                    is AdaptiveProbeResult.Success -> when (result.source) {
+                        AdaptiveProbeSource.Fresh -> AdaptarrProbeState.MeasuredFresh
+                        AdaptiveProbeSource.Cached -> AdaptarrProbeState.MeasuredCached
+                    }
+                    AdaptiveProbeResult.Timeout -> AdaptarrProbeState.Timeout
+                    AdaptiveProbeResult.Unavailable -> AdaptarrProbeState.Unavailable
+                    AdaptiveProbeResult.Stale -> AdaptarrProbeState.NetworkChanged
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                AdaptarrProbeState.Unavailable
             }
         }
     }
