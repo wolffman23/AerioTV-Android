@@ -3,6 +3,7 @@ package com.aeriotv.android.feature.settings
 import com.aeriotv.android.core.network.TMDBService
 import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
 import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
+import com.aeriotv.android.core.network.adaptarr.AdaptarrDiagnostics
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeMeasurement
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
@@ -12,6 +13,7 @@ import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
 import com.aeriotv.android.core.preferences.AppPreferences
 import io.mockk.coEvery
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -33,6 +35,7 @@ class SettingsViewModelAdaptarrTest {
     private lateinit var tmdb: TMDBService
     private lateinit var client: AdaptarrClient
     private lateinit var probeCoordinator: AdaptiveProbeCoordinator
+    private lateinit var diagnostics: AdaptarrDiagnostics
     private lateinit var viewModel: SettingsViewModel
 
     @Before
@@ -42,7 +45,8 @@ class SettingsViewModelAdaptarrTest {
         tmdb = mockk(relaxed = true)
         client = mockk()
         probeCoordinator = mockk()
-        viewModel = SettingsViewModel(prefs, tmdb, client, probeCoordinator)
+        diagnostics = mockk(relaxed = true)
+        viewModel = SettingsViewModel(prefs, tmdb, client, probeCoordinator, diagnostics)
     }
 
     @After
@@ -168,5 +172,94 @@ class SettingsViewModelAdaptarrTest {
         advanceUntilIdle()
         assertEquals(SettingsViewModel.AdaptarrProbeState.Idle, viewModel.adaptarrProbeState.value)
         assertEquals(SettingsViewModel.AdaptarrConnectionState.Idle, viewModel.adaptarrConnectionState.value)
+        verify(exactly = 1) { diagnostics.connectionStarted() }
+        verify(exactly = 1) { diagnostics.connectionCancelled() }
+        verify(exactly = 0) { diagnostics.connectionFinished(any()) }
+        verify(exactly = 1) { diagnostics.probeStarted() }
+        verify(exactly = 1) { diagnostics.probeCancelled() }
+        verify(exactly = 0) { diagnostics.probeFinished(any()) }
+    }
+
+    @Test
+    fun `connection test emits safe start and completion diagnostics`() = runTest(dispatcher.scheduler) {
+        coEvery { client.testConnection(any(), any()) } returns AdaptarrConnectionTestResult.Connected
+
+        viewModel.testAdaptarrConnection("https://secret-host.local/private", "s".repeat(32))
+        advanceUntilIdle()
+
+        verify(exactly = 1) { diagnostics.connectionStarted() }
+        verify(exactly = 1) {
+            diagnostics.connectionFinished(AdaptarrConnectionTestResult.Connected)
+        }
+        verify(exactly = 0) { diagnostics.connectionCancelled() }
+    }
+
+    @Test
+    fun `cancelled probe emits cancellation without completion diagnostics`() = runTest(dispatcher.scheduler) {
+        coEvery { probeCoordinator.probe(any(), any()) } coAnswers { awaitCancellation() }
+
+        viewModel.runAdaptarrSpeedTest("https://secret-host.local/private", "s".repeat(32))
+        runCurrent()
+        viewModel.resetAdaptarrConnectionState()
+        advanceUntilIdle()
+
+        verify(exactly = 1) { diagnostics.probeStarted() }
+        verify(exactly = 1) { diagnostics.probeCancelled() }
+        verify(exactly = 0) { diagnostics.probeFinished(any()) }
+    }
+
+    @Test
+    fun `unexpected connection exception emits fixed invalid response diagnostics`() = runTest(dispatcher.scheduler) {
+        coEvery { client.testConnection(any(), any()) } throws
+            IllegalStateException("Bearer secret-token at https://secret-host.local/private")
+
+        viewModel.testAdaptarrConnection("https://secret-host.local/private", "s".repeat(32))
+        advanceUntilIdle()
+
+        assertEquals(
+            SettingsViewModel.AdaptarrConnectionState.InvalidResponse,
+            viewModel.adaptarrConnectionState.value,
+        )
+        verify(exactly = 1) { diagnostics.connectionStarted() }
+        verify(exactly = 1) {
+            diagnostics.connectionFinished(AdaptarrConnectionTestResult.InvalidResponse)
+        }
+        verify(exactly = 0) { diagnostics.connectionCancelled() }
+    }
+
+    @Test
+    fun `unexpected probe exception emits fixed unavailable diagnostics`() = runTest(dispatcher.scheduler) {
+        coEvery { probeCoordinator.probe(any(), any()) } throws
+            IllegalStateException("network key and payload must never be logged")
+
+        viewModel.runAdaptarrSpeedTest("https://secret-host.local/private", "s".repeat(32))
+        advanceUntilIdle()
+
+        assertEquals(SettingsViewModel.AdaptarrProbeState.Unavailable, viewModel.adaptarrProbeState.value)
+        verify(exactly = 1) { diagnostics.probeStarted() }
+        verify(exactly = 1) { diagnostics.probeFinished(AdaptiveProbeResult.Unavailable) }
+        verify(exactly = 0) { diagnostics.probeCancelled() }
+    }
+
+    @Test
+    fun `fresh probe emits typed completion diagnostics`() = runTest(dispatcher.scheduler) {
+        val result = AdaptiveProbeResult.Success(
+            measurement = AdaptiveProbeMeasurement(
+                networkKey = "b".repeat(64),
+                measuredThroughputBps = 8_000_000L,
+                sampleCount = 1,
+                confidence = AdaptarrTelemetryConfidence.Low,
+                measuredAtElapsedRealtimeMs = 100L,
+            ),
+            source = AdaptiveProbeSource.Fresh,
+        )
+        coEvery { probeCoordinator.probe(any(), any()) } returns result
+
+        viewModel.runAdaptarrSpeedTest("https://secret-host.local/private", "s".repeat(32))
+        advanceUntilIdle()
+
+        verify(exactly = 1) { diagnostics.probeStarted() }
+        verify(exactly = 1) { diagnostics.probeFinished(result) }
+        verify(exactly = 0) { diagnostics.probeCancelled() }
     }
 }

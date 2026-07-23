@@ -8,6 +8,7 @@ import com.aeriotv.android.core.category.ProgramCategory
 import com.aeriotv.android.core.network.TMDBService
 import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
 import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
+import com.aeriotv.android.core.network.adaptarr.AdaptarrDiagnostics
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeSource
@@ -38,6 +39,7 @@ class SettingsViewModel @Inject constructor(
     private val tmdb: TMDBService,
     private val adaptarrClient: AdaptarrClient,
     private val adaptiveProbeCoordinator: AdaptiveProbeCoordinator,
+    private val adaptarrDiagnostics: AdaptarrDiagnostics,
 ) : ViewModel() {
 
     // Appearance
@@ -400,25 +402,29 @@ class SettingsViewModel @Inject constructor(
         adaptarrConnectionJob = viewModelScope.launch {
             _adaptarrProbeState.value = AdaptarrProbeState.Idle
             _adaptarrConnectionState.value = AdaptarrConnectionState.Testing
-            _adaptarrConnectionState.value = try {
-                when (adaptarrClient.testConnection(baseUrl, token)) {
-                    AdaptarrConnectionTestResult.Connected -> AdaptarrConnectionState.Connected
-                    AdaptarrConnectionTestResult.InvalidSettings ->
-                        AdaptarrConnectionState.InvalidConnectionSettings
-                    AdaptarrConnectionTestResult.Unauthorized -> AdaptarrConnectionState.Unauthorized
-                    AdaptarrConnectionTestResult.IncompatibleProtocol ->
-                        AdaptarrConnectionState.IncompatibleProtocol
-                    AdaptarrConnectionTestResult.RateLimited -> AdaptarrConnectionState.RateLimited
-                    AdaptarrConnectionTestResult.ServiceUnavailable ->
-                        AdaptarrConnectionState.ServiceUnavailable
-                    AdaptarrConnectionTestResult.InvalidResponse ->
-                        AdaptarrConnectionState.InvalidResponse
-                    AdaptarrConnectionTestResult.Unreachable -> AdaptarrConnectionState.Unreachable
-                }
+            adaptarrDiagnostics.connectionStarted()
+            val result = try {
+                adaptarrClient.testConnection(baseUrl, token)
             } catch (cancelled: CancellationException) {
+                adaptarrDiagnostics.connectionCancelled()
                 throw cancelled
             } catch (_: Exception) {
-                AdaptarrConnectionState.InvalidResponse
+                AdaptarrConnectionTestResult.InvalidResponse
+            }
+            adaptarrDiagnostics.connectionFinished(result)
+            _adaptarrConnectionState.value = when (result) {
+                AdaptarrConnectionTestResult.Connected -> AdaptarrConnectionState.Connected
+                AdaptarrConnectionTestResult.InvalidSettings ->
+                    AdaptarrConnectionState.InvalidConnectionSettings
+                AdaptarrConnectionTestResult.Unauthorized -> AdaptarrConnectionState.Unauthorized
+                AdaptarrConnectionTestResult.IncompatibleProtocol ->
+                    AdaptarrConnectionState.IncompatibleProtocol
+                AdaptarrConnectionTestResult.RateLimited -> AdaptarrConnectionState.RateLimited
+                AdaptarrConnectionTestResult.ServiceUnavailable ->
+                    AdaptarrConnectionState.ServiceUnavailable
+                AdaptarrConnectionTestResult.InvalidResponse ->
+                    AdaptarrConnectionState.InvalidResponse
+                AdaptarrConnectionTestResult.Unreachable -> AdaptarrConnectionState.Unreachable
             }
         }
     }
@@ -428,20 +434,24 @@ class SettingsViewModel @Inject constructor(
         adaptarrConnectionJob = viewModelScope.launch {
             _adaptarrConnectionState.value = AdaptarrConnectionState.Idle
             _adaptarrProbeState.value = AdaptarrProbeState.Testing
-            _adaptarrProbeState.value = try {
-                when (val result = adaptiveProbeCoordinator.probe(baseUrl, token)) {
-                    is AdaptiveProbeResult.Success -> when (result.source) {
-                        AdaptiveProbeSource.Fresh -> AdaptarrProbeState.MeasuredFresh
-                        AdaptiveProbeSource.Cached -> AdaptarrProbeState.MeasuredCached
-                    }
-                    AdaptiveProbeResult.Timeout -> AdaptarrProbeState.Timeout
-                    AdaptiveProbeResult.Unavailable -> AdaptarrProbeState.Unavailable
-                    AdaptiveProbeResult.Stale -> AdaptarrProbeState.NetworkChanged
-                }
+            adaptarrDiagnostics.probeStarted()
+            val result = try {
+                adaptiveProbeCoordinator.probe(baseUrl, token)
             } catch (cancelled: CancellationException) {
+                adaptarrDiagnostics.probeCancelled()
                 throw cancelled
             } catch (_: Exception) {
-                AdaptarrProbeState.Unavailable
+                AdaptiveProbeResult.Unavailable
+            }
+            adaptarrDiagnostics.probeFinished(result)
+            _adaptarrProbeState.value = when (result) {
+                is AdaptiveProbeResult.Success -> when (result.source) {
+                    AdaptiveProbeSource.Fresh -> AdaptarrProbeState.MeasuredFresh
+                    AdaptiveProbeSource.Cached -> AdaptarrProbeState.MeasuredCached
+                }
+                AdaptiveProbeResult.Timeout -> AdaptarrProbeState.Timeout
+                AdaptiveProbeResult.Unavailable -> AdaptarrProbeState.Unavailable
+                AdaptiveProbeResult.Stale -> AdaptarrProbeState.NetworkChanged
             }
         }
     }
