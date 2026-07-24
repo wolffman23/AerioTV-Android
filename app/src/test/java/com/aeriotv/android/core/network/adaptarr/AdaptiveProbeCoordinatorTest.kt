@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,6 +20,24 @@ class AdaptiveProbeCoordinatorTest {
 
     private val wifi = AdaptiveNetworkIdentity(AdaptiveTransport.Wifi, metered = false, vpn = false)
     private val secret = ByteArray(32) { it.toByte() }
+
+    @Test
+    fun `unchanged relevant network identity does not invalidate`() {
+        val tracker = AdaptiveNetworkChangeTracker(wifi)
+
+        assertFalse(tracker.update(wifi.copy()))
+    }
+
+    @Test
+    fun `relevant network identity change invalidates and advances baseline`() {
+        val tracker = AdaptiveNetworkChangeTracker(wifi)
+        val meteredWifi = wifi.copy(metered = true)
+
+        assertTrue(tracker.update(meteredWifi))
+        assertFalse(tracker.update(meteredWifi.copy()))
+        assertTrue(tracker.update(meteredWifi.copy(vpn = true)))
+        assertTrue(tracker.update(meteredWifi.copy(transport = AdaptiveTransport.Cellular)))
+    }
 
     @Test
     fun `network key uses fixed HMAC vector and changes with secret or identity`() {

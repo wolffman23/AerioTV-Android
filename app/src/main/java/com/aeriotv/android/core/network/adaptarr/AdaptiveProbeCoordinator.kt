@@ -45,15 +45,28 @@ class AdaptiveProbeCoordinator @Inject constructor(
         elapsedRealtimeMs = SystemClock::elapsedRealtime,
         processSecret = processSecret,
     )
+    private val networkChangeTracker = AdaptiveNetworkChangeTracker(currentIdentity())
 
     // Process-lifetime registration: this object and its SupervisorJob are singletons.
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = cache.invalidateNow()
-        override fun onLost(network: Network) = cache.invalidateNow()
+        override fun onAvailable(network: Network) {
+            networkChangeTracker.update(currentIdentity())
+            cache.invalidateNow()
+        }
+
+        override fun onLost(network: Network) {
+            networkChangeTracker.update(currentIdentity())
+            cache.invalidateNow()
+        }
+
         override fun onCapabilitiesChanged(
             network: Network,
             networkCapabilities: NetworkCapabilities,
-        ) = cache.invalidateNow()
+        ) {
+            if (networkChangeTracker.update(networkCapabilities.toAdaptiveNetworkIdentity())) {
+                cache.invalidateNow()
+            }
+        }
     }
 
     init {
@@ -89,19 +102,33 @@ class AdaptiveProbeCoordinator @Inject constructor(
                 manager.getNetworkCapabilities(manager.activeNetwork)
             }
         }.getOrNull()
-        if (capabilities == null) {
-            return AdaptiveNetworkIdentity(AdaptiveTransport.None, metered = true, vpn = false)
-        }
-        val transport = when {
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> AdaptiveTransport.Ethernet
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> AdaptiveTransport.Wifi
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> AdaptiveTransport.Cellular
-            else -> AdaptiveTransport.Other
-        }
-        return AdaptiveNetworkIdentity(
-            transport = transport,
-            metered = !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
-            vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
-        )
+        return capabilities?.toAdaptiveNetworkIdentity()
+            ?: AdaptiveNetworkIdentity(AdaptiveTransport.None, metered = true, vpn = false)
+    }
+}
+
+private fun NetworkCapabilities.toAdaptiveNetworkIdentity(): AdaptiveNetworkIdentity {
+    val transport = when {
+        hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> AdaptiveTransport.Ethernet
+        hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> AdaptiveTransport.Wifi
+        hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> AdaptiveTransport.Cellular
+        else -> AdaptiveTransport.Other
+    }
+    return AdaptiveNetworkIdentity(
+        transport = transport,
+        metered = !hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+        vpn = hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+    )
+}
+
+/** Tracks only the privacy-safe identity fields that partition the probe cache. */
+internal class AdaptiveNetworkChangeTracker(initialIdentity: AdaptiveNetworkIdentity) {
+    private var identity = initialIdentity
+
+    @Synchronized
+    fun update(nextIdentity: AdaptiveNetworkIdentity): Boolean {
+        if (nextIdentity == identity) return false
+        identity = nextIdentity
+        return true
     }
 }
