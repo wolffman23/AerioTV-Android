@@ -510,8 +510,15 @@ class SettingsViewModel @Inject constructor(
                 durationMs = measurement.durationMs,
                 latencyMs = measurement.latencyMs,
             ))
-            adaptarrClient.recommendation(baseUrl, token, AdaptarrRecommendationRequest(measurement.networkKey, maxHeight))
-            prefs.setAdaptarrLastDecision("Telemetry dry-run advisory: ${aggregate.sampleCount}/3 samples; no playback change.")
+            val recommendation = adaptarrClient.recommendation(
+                baseUrl,
+                token,
+                AdaptarrRecommendationRequest(measurement.networkKey, maxHeight),
+            )
+            val advisory = recommendation.profile?.let { profile ->
+                "${profile.name} (${profile.height}p)"
+            } ?: "${aggregate.sampleCount}/3 samples"
+            prefs.setAdaptarrLastDecision("Telemetry dry-run advisory: $advisory; no playback change.")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {

@@ -7,6 +7,13 @@ import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
 import com.aeriotv.android.core.network.adaptarr.AdaptarrDiagnostics
 import com.aeriotv.android.core.network.adaptarr.AdaptarrProfile
 import com.aeriotv.android.core.network.adaptarr.AdaptarrProfileMode
+import com.aeriotv.android.core.network.adaptarr.AdaptarrRecommendedProfile
+import com.aeriotv.android.core.network.adaptarr.AdaptarrRecommendationReason
+import com.aeriotv.android.core.network.adaptarr.AdaptarrRecommendationResponse
+import com.aeriotv.android.core.network.adaptarr.AdaptarrRecommendationStatus
+import com.aeriotv.android.core.network.adaptarr.AdaptarrConfidence
+import com.aeriotv.android.core.network.adaptarr.AdaptarrTelemetryAggregate
+import com.aeriotv.android.core.network.adaptarr.AdaptarrTelemetryReport
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeMeasurement
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
@@ -18,6 +25,7 @@ import com.aeriotv.android.core.preferences.AppPreferences
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -464,4 +472,133 @@ class SettingsViewModelAdaptarrTest {
             assertTrue(configCancelled)
             coVerify(exactly = 0) { prefs.setAdaptarrLastDecision(any()) }
         }
+
+    @Test
+    fun `telemetry dry-run reports only allowlisted probe values and displays a three-sample profile advisory`() =
+        runTest(dispatcher.scheduler) {
+            val measurement = telemetryMeasurement("4")
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh)
+            coEvery { client.configuration(any(), any()) } throws IllegalStateException("configuration unavailable")
+            coEvery { client.reportTelemetry(any(), any(), any()) } returns telemetryAggregate(3)
+            coEvery { client.recommendation(any(), any(), any()) } returns recommendedResponse()
+
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Recommend,
+                1080,
+                telemetryConsent = true,
+            )
+            advanceUntilIdle()
+
+            val reported = slot<AdaptarrTelemetryReport>()
+            coVerify(exactly = 1) {
+                client.reportTelemetry(
+                    "https://adaptarr.local",
+                    "t".repeat(32),
+                    capture(reported),
+                )
+            }
+            assertEquals(measurement.networkKey, reported.captured.networkKey)
+            assertEquals(1_048_576L, reported.captured.bytesTransferred)
+            assertEquals(250, reported.captured.durationMs)
+            assertEquals(0, reported.captured.latencyMs)
+            coVerify(exactly = 1) { client.recommendation(any(), any(), any()) }
+            coVerify(exactly = 1) {
+                prefs.setAdaptarrLastDecision(
+                    "Telemetry dry-run advisory: Adaptarr 1080p Passthrough (1080p); no playback change.",
+                )
+            }
+        }
+
+    @Test
+    fun `telemetry report failure preserves the local recommendation and does not request an advisory`() =
+        runTest(dispatcher.scheduler) {
+            val measurement = telemetryMeasurement("5")
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh)
+            coEvery { client.configuration(any(), any()) } throws IllegalStateException("configuration unavailable")
+            coEvery { client.reportTelemetry(any(), any(), any()) } throws IllegalStateException("telemetry unavailable")
+
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Recommend,
+                720,
+                telemetryConsent = true,
+            )
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { prefs.setAdaptarrLastDecision("Local recommendation unavailable.") }
+            coVerify(exactly = 0) { client.recommendation(any(), any(), any()) }
+        }
+
+    @Test
+    fun `opting out cancels an in-flight telemetry report before recommendation`() =
+        runTest(dispatcher.scheduler) {
+            val measurement = telemetryMeasurement("6")
+            var reportCancelled = false
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh)
+            coEvery { client.configuration(any(), any()) } throws IllegalStateException("configuration unavailable")
+            coEvery { client.reportTelemetry(any(), any(), any()) } coAnswers {
+                try {
+                    awaitCancellation()
+                } finally {
+                    reportCancelled = true
+                }
+            }
+
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Recommend,
+                720,
+                telemetryConsent = true,
+            )
+            runCurrent()
+            viewModel.setAdaptarrTelemetryDryRunConsent(false)
+            advanceUntilIdle()
+
+            assertTrue(reportCancelled)
+            coVerify(exactly = 1) { prefs.setAdaptarrTelemetryDryRunConsent(false) }
+            coVerify(exactly = 0) { client.recommendation(any(), any(), any()) }
+        }
+
+    private fun telemetryMeasurement(keyChar: String) = AdaptiveProbeMeasurement(
+        networkKey = keyChar.repeat(64),
+        measuredThroughputBps = 8_000_000L,
+        sampleCount = 1,
+        confidence = AdaptarrTelemetryConfidence.Low,
+        measuredAtElapsedRealtimeMs = 100L,
+        bytesTransferred = 1_048_576L,
+        durationMs = 250,
+        latencyMs = 0,
+    )
+
+    private fun telemetryAggregate(sampleCount: Int) = AdaptarrTelemetryAggregate(
+        status = "aggregated",
+        sampleCount = sampleCount,
+        conservativeThroughputBps = 14_000_000L,
+        medianLatencyMs = 0,
+        confidence = AdaptarrTelemetryConfidence.Medium,
+        lastObservedAt = "2026-07-25T00:00:00Z",
+        expiresAt = "2026-07-25T01:00:00Z",
+    )
+
+    private fun recommendedResponse() = AdaptarrRecommendationResponse(
+        status = AdaptarrRecommendationStatus.Recommended,
+        dryRun = true,
+        profile = AdaptarrRecommendedProfile(
+            outputProfileId = 7,
+            name = "Adaptarr 1080p Passthrough",
+            height = 1080,
+            minimumThroughputBps = 12_000_000L,
+        ),
+        sampleCount = 3,
+        conservativeThroughputBps = 14_000_000L,
+        confidence = AdaptarrConfidence.Medium,
+        reason = AdaptarrRecommendationReason.ThresholdMet,
+    )
 }
