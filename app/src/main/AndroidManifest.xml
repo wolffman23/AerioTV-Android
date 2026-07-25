@@ -9,6 +9,9 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Active transport/metered/VPN cache partitioning and default-network
+         callbacks. Normal protection level; no SSID or location access. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Google Cast (GH #33) sender-side device discovery. The Cast SDK's mDNS
          discovery runs in-process (androidx.mediarouter) and needs a Wi-Fi
          multicast lock to receive the _googlecast._tcp advertisements; without

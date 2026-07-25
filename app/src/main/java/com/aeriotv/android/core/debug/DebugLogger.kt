@@ -170,7 +170,7 @@ class DebugLogger @Inject constructor(
                         // reader must never resurrect when the flag flips
                         // back on (it would duplicate every line).
                         if (!enabled.get() || !isActive) break
-                        writeLine(LogSanitizer.redact(line))
+                        PersistentLogPolicy.safeLine(line)?.let(::writeLine)
                     }
                 }
                 runCatching { proc.destroy() }
@@ -231,7 +231,10 @@ class DebugLogger @Inject constructor(
                             "---- logcat snapshot at crash (pid $pid) ----" +
                                 System.lineSeparator(),
                         )
-                        f.appendText(LogSanitizer.redact(dump))
+                        val safeSnapshot = PersistentLogPolicy.safeSnapshot(dump)
+                        if (safeSnapshot.isNotEmpty()) {
+                            f.appendText(safeSnapshot + System.lineSeparator())
+                        }
                     }
                 }
             }

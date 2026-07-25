@@ -6,11 +6,25 @@ import com.aeriotv.android.core.category.CategoryPaletteState
 import com.aeriotv.android.core.category.CustomCategoryEntry
 import com.aeriotv.android.core.category.ProgramCategory
 import com.aeriotv.android.core.network.TMDBService
+import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
+import com.aeriotv.android.core.network.adaptarr.AdaptarrConfigResponse
+import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
+import com.aeriotv.android.core.network.adaptarr.AdaptarrDiagnostics
+import com.aeriotv.android.core.network.adaptarr.AdaptarrRecommendationRequest
+import com.aeriotv.android.core.network.adaptarr.AdaptarrTelemetryReport
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeMeasurement
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeSource
+import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
+import com.aeriotv.android.core.preferences.AdaptiveQualityMode
 import com.aeriotv.android.core.preferences.AppPreferences
 import com.aeriotv.android.ui.theme.AppTheme
 import com.aeriotv.android.ui.theme.AppearanceMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +41,9 @@ import kotlinx.coroutines.launch
 class SettingsViewModel @Inject constructor(
     private val prefs: AppPreferences,
     private val tmdb: TMDBService,
+    private val adaptarrClient: AdaptarrClient,
+    private val adaptiveProbeCoordinator: AdaptiveProbeCoordinator,
+    private val adaptarrDiagnostics: AdaptarrDiagnostics,
 ) : ViewModel() {
 
     // Appearance
@@ -286,6 +303,269 @@ class SettingsViewModel @Inject constructor(
     val epgWindowHours: Flow<Int> = prefs.epgWindowHours
     fun setEpgWindowHours(value: Int) {
         viewModelScope.launch { prefs.setEpgWindowHours(value) }
+    }
+
+    // Adaptarr adaptive-quality settings are device-local. Connection testing
+    // is read-only and cannot mutate playback or Dispatcharr state.
+    val adaptarrEnabled: Flow<Boolean> = prefs.adaptarrEnabled
+    fun setAdaptarrEnabled(value: Boolean) {
+        viewModelScope.launch { prefs.setAdaptarrEnabled(value) }
+    }
+
+    val adaptarrBaseUrl: Flow<String> = prefs.adaptarrBaseUrl
+    val adaptarrToken: Flow<String> = prefs.adaptarrToken
+    val adaptiveQualityMode: Flow<AdaptiveQualityMode> = prefs.adaptiveQualityMode
+    fun setAdaptiveQualityMode(value: AdaptiveQualityMode) {
+        cancelLocalRecommendationIfRunning()
+        viewModelScope.launch { prefs.setAdaptiveQualityMode(value) }
+    }
+
+    val adaptiveMaxHeight: Flow<Int> = prefs.adaptiveMaxHeight
+    fun setAdaptiveMaxHeight(value: Int) {
+        cancelLocalRecommendationIfRunning()
+        viewModelScope.launch { prefs.setAdaptiveMaxHeight(value) }
+    }
+
+    val adaptiveCellularMaxHeight: Flow<Int> = prefs.adaptiveCellularMaxHeight
+    fun setAdaptiveCellularMaxHeight(value: Int) {
+        viewModelScope.launch { prefs.setAdaptiveCellularMaxHeight(value) }
+    }
+
+    val adaptiveFallbackHeight: Flow<Int> = prefs.adaptiveFallbackHeight
+    fun setAdaptiveFallbackHeight(value: Int) {
+        viewModelScope.launch { prefs.setAdaptiveFallbackHeight(value) }
+    }
+
+    val adaptarrLastMeasuredThroughputBps: Flow<Long> =
+        prefs.adaptarrLastMeasuredThroughputBps
+    val adaptarrLastDecision: Flow<String> = prefs.adaptarrLastDecision
+
+    enum class AdaptarrConnectionState {
+        Idle,
+        Saving,
+        Saved,
+        Testing,
+        Connected,
+        InvalidBaseUrl,
+        InvalidToken,
+        InvalidConnectionSettings,
+        EncryptionFailed,
+        PersistenceFailed,
+        Unauthorized,
+        IncompatibleProtocol,
+        RateLimited,
+        ServiceUnavailable,
+        InvalidResponse,
+        Unreachable,
+    }
+
+    enum class AdaptarrProbeState {
+        Idle,
+        Testing,
+        MeasuredFresh,
+        MeasuredCached,
+        Timeout,
+        Unavailable,
+        NetworkChanged,
+    }
+
+    private val _adaptarrConnectionState = MutableStateFlow(AdaptarrConnectionState.Idle)
+    val adaptarrConnectionState: StateFlow<AdaptarrConnectionState> =
+        _adaptarrConnectionState.asStateFlow()
+    private val _adaptarrProbeState = MutableStateFlow(AdaptarrProbeState.Idle)
+    val adaptarrProbeState: StateFlow<AdaptarrProbeState> = _adaptarrProbeState.asStateFlow()
+    private var adaptarrConnectionJob: Job? = null
+    private var localRecommendationInFlight = false
+
+    private fun cancelLocalRecommendationIfRunning() {
+        if (localRecommendationInFlight) {
+            adaptarrConnectionJob?.cancel()
+            _adaptarrProbeState.value = AdaptarrProbeState.Idle
+        }
+    }
+
+    fun resetAdaptarrConnectionState() {
+        adaptarrConnectionJob?.cancel()
+        adaptarrConnectionJob = null
+        _adaptarrConnectionState.value = AdaptarrConnectionState.Idle
+        _adaptarrProbeState.value = AdaptarrProbeState.Idle
+    }
+
+    fun saveAdaptarrConnection(baseUrl: String, token: String) {
+        adaptarrConnectionJob?.cancel()
+        adaptarrConnectionJob = viewModelScope.launch {
+            _adaptarrProbeState.value = AdaptarrProbeState.Idle
+            _adaptarrConnectionState.value = AdaptarrConnectionState.Saving
+            _adaptarrConnectionState.value = try {
+                when (prefs.saveAdaptarrConnection(baseUrl, token)) {
+                    AdaptarrConnectionSaveResult.Saved -> AdaptarrConnectionState.Saved
+                    AdaptarrConnectionSaveResult.InvalidBaseUrl -> AdaptarrConnectionState.InvalidBaseUrl
+                    AdaptarrConnectionSaveResult.InvalidToken -> AdaptarrConnectionState.InvalidToken
+                    AdaptarrConnectionSaveResult.EncryptionFailed -> AdaptarrConnectionState.EncryptionFailed
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                AdaptarrConnectionState.PersistenceFailed
+            }
+        }
+    }
+
+    fun testAdaptarrConnection(baseUrl: String, token: String) {
+        adaptarrConnectionJob?.cancel()
+        adaptarrConnectionJob = viewModelScope.launch {
+            _adaptarrProbeState.value = AdaptarrProbeState.Idle
+            _adaptarrConnectionState.value = AdaptarrConnectionState.Testing
+            adaptarrDiagnostics.connectionStarted()
+            val result = try {
+                adaptarrClient.testConnection(baseUrl, token)
+            } catch (cancelled: CancellationException) {
+                adaptarrDiagnostics.connectionCancelled()
+                throw cancelled
+            } catch (_: Exception) {
+                AdaptarrConnectionTestResult.InvalidResponse
+            }
+            adaptarrDiagnostics.connectionFinished(result)
+            _adaptarrConnectionState.value = when (result) {
+                AdaptarrConnectionTestResult.Connected -> AdaptarrConnectionState.Connected
+                AdaptarrConnectionTestResult.InvalidSettings ->
+                    AdaptarrConnectionState.InvalidConnectionSettings
+                AdaptarrConnectionTestResult.Unauthorized -> AdaptarrConnectionState.Unauthorized
+                AdaptarrConnectionTestResult.IncompatibleProtocol ->
+                    AdaptarrConnectionState.IncompatibleProtocol
+                AdaptarrConnectionTestResult.RateLimited -> AdaptarrConnectionState.RateLimited
+                AdaptarrConnectionTestResult.ServiceUnavailable ->
+                    AdaptarrConnectionState.ServiceUnavailable
+                AdaptarrConnectionTestResult.InvalidResponse ->
+                    AdaptarrConnectionState.InvalidResponse
+                AdaptarrConnectionTestResult.Unreachable -> AdaptarrConnectionState.Unreachable
+            }
+        }
+    }
+
+    val adaptarrTelemetryDryRunConsent: Flow<Boolean> = prefs.adaptarrTelemetryDryRunConsent
+    fun setAdaptarrTelemetryDryRunConsent(value: Boolean) {
+        if (!value) adaptarrConnectionJob?.cancel()
+        viewModelScope.launch { prefs.setAdaptarrTelemetryDryRunConsent(value) }
+    }
+
+    fun runAdaptarrSpeedTest(baseUrl: String, token: String) =
+        runAdaptarrSpeedTest(baseUrl, token, AdaptiveQualityMode.Off, 720, false)
+
+    /**
+     * Runs an explicit local speed test. In Recommend mode a fresh measurement is
+     * compared locally with trusted configuration thresholds; no measurement,
+     * network key, telemetry, or recommendation request leaves the device.
+     */
+    fun runAdaptarrSpeedTest(
+        baseUrl: String,
+        token: String,
+        mode: AdaptiveQualityMode,
+        maxHeight: Int,
+        telemetryConsent: Boolean = false,
+    ) {
+        adaptarrConnectionJob?.cancel()
+        adaptarrConnectionJob = viewModelScope.launch {
+            _adaptarrConnectionState.value = AdaptarrConnectionState.Idle
+            _adaptarrProbeState.value = AdaptarrProbeState.Testing
+            adaptarrDiagnostics.probeStarted()
+            val result = try {
+                adaptiveProbeCoordinator.probe(baseUrl, token)
+            } catch (cancelled: CancellationException) {
+                adaptarrDiagnostics.probeCancelled()
+                throw cancelled
+            } catch (_: Exception) {
+                AdaptiveProbeResult.Unavailable
+            }
+            adaptarrDiagnostics.probeFinished(result)
+            _adaptarrProbeState.value = when (result) {
+                is AdaptiveProbeResult.Success -> when (result.source) {
+                    AdaptiveProbeSource.Fresh -> AdaptarrProbeState.MeasuredFresh
+                    AdaptiveProbeSource.Cached -> AdaptarrProbeState.MeasuredCached
+                }
+                AdaptiveProbeResult.Timeout -> AdaptarrProbeState.Timeout
+                AdaptiveProbeResult.Unavailable -> AdaptarrProbeState.Unavailable
+                AdaptiveProbeResult.Stale -> AdaptarrProbeState.NetworkChanged
+            }
+            if (result is AdaptiveProbeResult.Success &&
+                result.source == AdaptiveProbeSource.Fresh &&
+                mode == AdaptiveQualityMode.Recommend
+            ) {
+                updateLocalRecommendation(baseUrl, token, maxHeight, result.measurement.measuredThroughputBps)
+                if (telemetryConsent) reportTelemetryDryRun(baseUrl, token, maxHeight, result.measurement)
+            }
+        }
+    }
+
+    private suspend fun reportTelemetryDryRun(
+        baseUrl: String,
+        token: String,
+        maxHeight: Int,
+        measurement: AdaptiveProbeMeasurement,
+    ) {
+        try {
+            val aggregate = adaptarrClient.reportTelemetry(baseUrl, token, AdaptarrTelemetryReport(
+                networkKey = measurement.networkKey,
+                bytesTransferred = measurement.bytesTransferred,
+                durationMs = measurement.durationMs,
+                latencyMs = measurement.latencyMs,
+            ))
+            val recommendation = adaptarrClient.recommendation(
+                baseUrl,
+                token,
+                AdaptarrRecommendationRequest(measurement.networkKey, maxHeight),
+            )
+            val advisory = recommendation.profile?.let { profile ->
+                "${profile.name} (${profile.height}p)"
+            } ?: "${aggregate.sampleCount}/3 samples"
+            prefs.setAdaptarrLastDecision("Telemetry dry-run advisory: $advisory; no playback change.")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Preserve the local recommendation; dry-run failure is non-fatal and never retried.
+        }
+    }
+
+    private suspend fun updateLocalRecommendation(
+        baseUrl: String,
+        token: String,
+        maxHeight: Int,
+        throughputBps: Long,
+    ) {
+        localRecommendationInFlight = true
+        try {
+            val configuration = try {
+                adaptarrClient.configuration(baseUrl, token)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                prefs.setAdaptarrLastDecision("Local recommendation unavailable.")
+                return
+            }
+            prefs.setAdaptarrLastDecision(
+                localRecommendationText(configuration, maxHeight, throughputBps),
+            )
+        } finally {
+            localRecommendationInFlight = false
+        }
+    }
+
+    private fun localRecommendationText(
+        configuration: AdaptarrConfigResponse,
+        maxHeight: Int,
+        throughputBps: Long,
+    ): String {
+        val eligible = configuration.profiles.values
+            .filter { it.height <= maxHeight }
+            .sortedBy { it.height }
+        val selected = eligible.lastOrNull { throughputBps >= it.minimumThroughputBps }
+        return when {
+            selected != null ->
+                "Local recommendation (low confidence): ${selected.name} (${selected.height}p)."
+            eligible.isNotEmpty() ->
+                "Local recommendation (low confidence): ${eligible.first().name} (${eligible.first().height}p) may exceed measured bandwidth."
+            else -> "Local recommendation unavailable."
+        }
     }
 
     // Audit task #48: master toggle for the periodic PlaylistRefreshWorker.

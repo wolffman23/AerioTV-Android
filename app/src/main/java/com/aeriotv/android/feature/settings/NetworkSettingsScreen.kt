@@ -69,7 +69,25 @@ fun NetworkSettingsScreen(
         .collectAsStateWithLifecycle(initialValue = true)
     val backgroundRefreshIntervalMins by viewModel.backgroundRefreshIntervalMins
         .collectAsStateWithLifecycle(initialValue = 360)
+    val adaptarrEnabled by viewModel.adaptarrEnabled.collectAsStateWithLifecycle(initialValue = false)
+    val adaptarrBaseUrl by viewModel.adaptarrBaseUrl.collectAsStateWithLifecycle(initialValue = "")
+    val adaptarrToken by viewModel.adaptarrToken.collectAsStateWithLifecycle(initialValue = "")
+    val adaptiveQualityMode by viewModel.adaptiveQualityMode.collectAsStateWithLifecycle(
+        initialValue = com.aeriotv.android.core.preferences.AdaptiveQualityMode.Off,
+    )
+    val adaptiveMaxHeight by viewModel.adaptiveMaxHeight.collectAsStateWithLifecycle(initialValue = 1080)
+    val adaptiveCellularMaxHeight by viewModel.adaptiveCellularMaxHeight
+        .collectAsStateWithLifecycle(initialValue = 720)
+    val adaptiveFallbackHeight by viewModel.adaptiveFallbackHeight
+        .collectAsStateWithLifecycle(initialValue = 720)
+    val lastMeasuredThroughputBps by viewModel.adaptarrLastMeasuredThroughputBps
+        .collectAsStateWithLifecycle(initialValue = 0L)
+    val lastDecision by viewModel.adaptarrLastDecision.collectAsStateWithLifecycle(initialValue = "")
+    val telemetryDryRunConsent by viewModel.adaptarrTelemetryDryRunConsent.collectAsStateWithLifecycle(initialValue = false)
+    val adaptarrConnectionState by viewModel.adaptarrConnectionState.collectAsStateWithLifecycle()
+    val adaptarrProbeState by viewModel.adaptarrProbeState.collectAsStateWithLifecycle()
 
+    TvKeyboardOnOkHost {
     Column(modifier = Modifier.fillMaxSize()) {
         SettingsDetailTopBar(title = "Network", onBack = onBack)
 
@@ -88,6 +106,32 @@ fun NetworkSettingsScreen(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
+            AdaptiveStreamingSettingsSection(
+                enabled = adaptarrEnabled,
+                baseUrl = adaptarrBaseUrl,
+                token = adaptarrToken,
+                mode = adaptiveQualityMode,
+                maxHeight = adaptiveMaxHeight,
+                cellularMaxHeight = adaptiveCellularMaxHeight,
+                fallbackHeight = adaptiveFallbackHeight,
+                lastMeasuredThroughputBps = lastMeasuredThroughputBps,
+                lastDecision = lastDecision,
+                connectionState = adaptarrConnectionState,
+                probeState = adaptarrProbeState,
+                telemetryDryRunConsent = telemetryDryRunConsent,
+                onEnabledChange = viewModel::setAdaptarrEnabled,
+                onSaveConnection = viewModel::saveAdaptarrConnection,
+                onTestConnection = viewModel::testAdaptarrConnection,
+                onRunSpeedTest = { baseUrl, token, mode, maxHeight, consent ->
+                    viewModel.runAdaptarrSpeedTest(baseUrl, token, mode, maxHeight, consent)
+                },
+                onTelemetryDryRunConsentChange = viewModel::setAdaptarrTelemetryDryRunConsent,
+                onConnectionDraftChanged = viewModel::resetAdaptarrConnectionState,
+                onModeChange = viewModel::setAdaptiveQualityMode,
+                onMaxHeightChange = viewModel::setAdaptiveMaxHeight,
+                onCellularMaxHeightChange = viewModel::setAdaptiveCellularMaxHeight,
+                onFallbackHeightChange = viewModel::setAdaptiveFallbackHeight,
+            )
             ConnectionSection(
                 timeoutSecs = timeoutSecs,
                 maxRetries = maxRetries,
@@ -116,6 +160,7 @@ fun NetworkSettingsScreen(
             )
         }
         }
+    }
     }
 }
 
