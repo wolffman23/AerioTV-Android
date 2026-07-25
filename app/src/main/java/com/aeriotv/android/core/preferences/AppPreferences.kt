@@ -634,6 +634,14 @@ class AppPreferences @Inject constructor(
         store.edit { it[KEY_ADAPTIVE_QUALITY_MODE] = effective.wire }
     }
 
+    /** Explicit device-local consent for advisory telemetry dry-run reporting. */
+    val adaptarrTelemetryDryRunConsent: Flow<Boolean> = store.data.map { prefs ->
+        prefs[KEY_ADAPTARR_TELEMETRY_DRY_RUN_CONSENT] ?: false
+    }
+    suspend fun setAdaptarrTelemetryDryRunConsent(value: Boolean) {
+        store.edit { it[KEY_ADAPTARR_TELEMETRY_DRY_RUN_CONSENT] = value }
+    }
+
     val adaptiveMaxHeight: Flow<Int> = store.data.map { prefs ->
         normalizeAdaptiveHeight(prefs[KEY_ADAPTIVE_MAX_HEIGHT] ?: 1080)
     }
@@ -1348,6 +1356,8 @@ class AppPreferences @Inject constructor(
         val KEY_ADAPTARR_BASE_URL = stringPreferencesKey("adaptarr_base_url")
         val KEY_ADAPTARR_TOKEN = stringPreferencesKey("adaptarr_token")
         val KEY_ADAPTIVE_QUALITY_MODE = stringPreferencesKey("adaptive_quality_mode")
+        val KEY_ADAPTARR_TELEMETRY_DRY_RUN_CONSENT =
+            booleanPreferencesKey("adaptarr_telemetry_dry_run_consent")
         val KEY_ADAPTIVE_MAX_HEIGHT = intPreferencesKey("adaptive_max_height")
         val KEY_ADAPTIVE_CELLULAR_MAX_HEIGHT = intPreferencesKey("adaptive_cellular_max_height")
         val KEY_ADAPTIVE_FALLBACK_HEIGHT = intPreferencesKey("adaptive_fallback_height")

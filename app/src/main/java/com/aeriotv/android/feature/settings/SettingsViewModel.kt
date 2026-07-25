@@ -10,7 +10,10 @@ import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
 import com.aeriotv.android.core.network.adaptarr.AdaptarrConfigResponse
 import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
 import com.aeriotv.android.core.network.adaptarr.AdaptarrDiagnostics
+import com.aeriotv.android.core.network.adaptarr.AdaptarrRecommendationRequest
+import com.aeriotv.android.core.network.adaptarr.AdaptarrTelemetryReport
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeMeasurement
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeSource
 import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
@@ -440,8 +443,14 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    val adaptarrTelemetryDryRunConsent: Flow<Boolean> = prefs.adaptarrTelemetryDryRunConsent
+    fun setAdaptarrTelemetryDryRunConsent(value: Boolean) {
+        if (!value) adaptarrConnectionJob?.cancel()
+        viewModelScope.launch { prefs.setAdaptarrTelemetryDryRunConsent(value) }
+    }
+
     fun runAdaptarrSpeedTest(baseUrl: String, token: String) =
-        runAdaptarrSpeedTest(baseUrl, token, AdaptiveQualityMode.Off, 720)
+        runAdaptarrSpeedTest(baseUrl, token, AdaptiveQualityMode.Off, 720, false)
 
     /**
      * Runs an explicit local speed test. In Recommend mode a fresh measurement is
@@ -453,6 +462,7 @@ class SettingsViewModel @Inject constructor(
         token: String,
         mode: AdaptiveQualityMode,
         maxHeight: Int,
+        telemetryConsent: Boolean = false,
     ) {
         adaptarrConnectionJob?.cancel()
         adaptarrConnectionJob = viewModelScope.launch {
@@ -482,7 +492,30 @@ class SettingsViewModel @Inject constructor(
                 mode == AdaptiveQualityMode.Recommend
             ) {
                 updateLocalRecommendation(baseUrl, token, maxHeight, result.measurement.measuredThroughputBps)
+                if (telemetryConsent) reportTelemetryDryRun(baseUrl, token, maxHeight, result.measurement)
             }
+        }
+    }
+
+    private suspend fun reportTelemetryDryRun(
+        baseUrl: String,
+        token: String,
+        maxHeight: Int,
+        measurement: AdaptiveProbeMeasurement,
+    ) {
+        try {
+            val aggregate = adaptarrClient.reportTelemetry(baseUrl, token, AdaptarrTelemetryReport(
+                networkKey = measurement.networkKey,
+                bytesTransferred = measurement.bytesTransferred,
+                durationMs = measurement.durationMs,
+                latencyMs = measurement.latencyMs,
+            ))
+            adaptarrClient.recommendation(baseUrl, token, AdaptarrRecommendationRequest(measurement.networkKey, maxHeight))
+            prefs.setAdaptarrLastDecision("Telemetry dry-run advisory: ${aggregate.sampleCount}/3 samples; no playback change.")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Preserve the local recommendation; dry-run failure is non-fatal and never retried.
         }
     }
 

@@ -30,6 +30,9 @@ internal class AdaptiveProbeRunner(
             sampleCount = 1,
             confidence = AdaptarrTelemetryConfidence.Low,
             measuredAtElapsedRealtimeMs = sampleFinished.coerceAtLeast(0L),
+            bytesTransferred = sample.size.toLong(),
+            durationMs = durationMs,
+            latencyMs = 0,
         )
     }
 

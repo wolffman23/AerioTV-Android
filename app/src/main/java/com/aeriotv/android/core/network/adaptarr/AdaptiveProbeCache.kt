@@ -57,6 +57,11 @@ internal data class AdaptiveProbeMeasurement(
     val sampleCount: Int,
     val confidence: AdaptarrTelemetryConfidence,
     val measuredAtElapsedRealtimeMs: Long,
+    /** Raw bounded probe inputs; process-memory only and never persisted. */
+    val bytesTransferred: Long = 1_048_576L,
+    val durationMs: Int = 1,
+    /** The download probe does not measure latency; zero is the protocol's no-sample value. */
+    val latencyMs: Int = 0,
 )
 
 internal enum class AdaptiveProbeSource {

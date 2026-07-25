@@ -83,6 +83,7 @@ fun NetworkSettingsScreen(
     val lastMeasuredThroughputBps by viewModel.adaptarrLastMeasuredThroughputBps
         .collectAsStateWithLifecycle(initialValue = 0L)
     val lastDecision by viewModel.adaptarrLastDecision.collectAsStateWithLifecycle(initialValue = "")
+    val telemetryDryRunConsent by viewModel.adaptarrTelemetryDryRunConsent.collectAsStateWithLifecycle(initialValue = false)
     val adaptarrConnectionState by viewModel.adaptarrConnectionState.collectAsStateWithLifecycle()
     val adaptarrProbeState by viewModel.adaptarrProbeState.collectAsStateWithLifecycle()
 
@@ -117,12 +118,14 @@ fun NetworkSettingsScreen(
                 lastDecision = lastDecision,
                 connectionState = adaptarrConnectionState,
                 probeState = adaptarrProbeState,
+                telemetryDryRunConsent = telemetryDryRunConsent,
                 onEnabledChange = viewModel::setAdaptarrEnabled,
                 onSaveConnection = viewModel::saveAdaptarrConnection,
                 onTestConnection = viewModel::testAdaptarrConnection,
-                onRunSpeedTest = { baseUrl, token, mode, maxHeight ->
-                    viewModel.runAdaptarrSpeedTest(baseUrl, token, mode, maxHeight)
+                onRunSpeedTest = { baseUrl, token, mode, maxHeight, consent ->
+                    viewModel.runAdaptarrSpeedTest(baseUrl, token, mode, maxHeight, consent)
                 },
+                onTelemetryDryRunConsentChange = viewModel::setAdaptarrTelemetryDryRunConsent,
                 onConnectionDraftChanged = viewModel::resetAdaptarrConnectionState,
                 onModeChange = viewModel::setAdaptiveQualityMode,
                 onMaxHeightChange = viewModel::setAdaptiveMaxHeight,

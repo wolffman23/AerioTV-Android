@@ -61,6 +61,18 @@ class AppPreferencesAdaptiveTest {
         assertEquals(720, preferences.adaptiveFallbackHeight.first())
         assertEquals(0L, preferences.adaptarrLastMeasuredThroughputBps.first())
         assertEquals("", preferences.adaptarrLastDecision.first())
+        assertFalse(preferences.adaptarrTelemetryDryRunConsent.first())
+    }
+
+    @Test
+    fun `telemetry dry-run consent defaults to off and round trips locally`() = runTest {
+        assertFalse(preferences.adaptarrTelemetryDryRunConsent.first())
+
+        preferences.setAdaptarrTelemetryDryRunConsent(true)
+        assertTrue(preferences.adaptarrTelemetryDryRunConsent.first())
+
+        preferences.setAdaptarrTelemetryDryRunConsent(false)
+        assertFalse(preferences.adaptarrTelemetryDryRunConsent.first())
     }
 
     @Test

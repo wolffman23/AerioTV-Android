@@ -44,10 +44,12 @@ internal fun AdaptiveStreamingSettingsSection(
     lastDecision: String,
     connectionState: SettingsViewModel.AdaptarrConnectionState,
     probeState: SettingsViewModel.AdaptarrProbeState,
+    telemetryDryRunConsent: Boolean,
     onEnabledChange: (Boolean) -> Unit,
     onSaveConnection: (String, String) -> Unit,
     onTestConnection: (String, String) -> Unit,
-    onRunSpeedTest: (String, String, AdaptiveQualityMode, Int) -> Unit,
+    onRunSpeedTest: (String, String, AdaptiveQualityMode, Int, Boolean) -> Unit,
+    onTelemetryDryRunConsentChange: (Boolean) -> Unit,
     onConnectionDraftChanged: () -> Unit,
     onModeChange: (AdaptiveQualityMode) -> Unit,
     onMaxHeightChange: (Int) -> Unit,
@@ -160,7 +162,7 @@ internal fun AdaptiveStreamingSettingsSection(
                         )
                     }
                     OutlinedButton(
-                        onClick = { onRunSpeedTest(baseUrlDraft, tokenDraft, mode, maxHeight) },
+                        onClick = { onRunSpeedTest(baseUrlDraft, tokenDraft, mode, maxHeight, telemetryDryRunConsent) },
                         enabled = !connectionState.isBusy() && !probeState.isBusy(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -209,6 +211,12 @@ internal fun AdaptiveStreamingSettingsSection(
                 subtitle = "Show a recommendation without changing playback.",
                 selected = mode == AdaptiveQualityMode.Recommend,
                 onClick = { onModeChange(AdaptiveQualityMode.Recommend) },
+            )
+            SettingsToggleRow(
+                title = "Telemetry dry-run",
+                subtitle = "Off by default. A fresh Recommend-only test sends one opaque-key sample for an advisory only; no playback change. Samples expire from companion memory within one hour.",
+                checked = telemetryDryRunConsent,
+                onCheckedChange = onTelemetryDryRunConsentChange,
             )
             Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Text(
