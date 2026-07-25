@@ -120,7 +120,9 @@ fun NetworkSettingsScreen(
                 onEnabledChange = viewModel::setAdaptarrEnabled,
                 onSaveConnection = viewModel::saveAdaptarrConnection,
                 onTestConnection = viewModel::testAdaptarrConnection,
-                onRunSpeedTest = viewModel::runAdaptarrSpeedTest,
+                onRunSpeedTest = { baseUrl, token, mode, maxHeight ->
+                    viewModel.runAdaptarrSpeedTest(baseUrl, token, mode, maxHeight)
+                },
                 onConnectionDraftChanged = viewModel::resetAdaptarrConnectionState,
                 onModeChange = viewModel::setAdaptiveQualityMode,
                 onMaxHeightChange = viewModel::setAdaptiveMaxHeight,

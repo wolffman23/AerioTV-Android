@@ -47,7 +47,7 @@ internal fun AdaptiveStreamingSettingsSection(
     onEnabledChange: (Boolean) -> Unit,
     onSaveConnection: (String, String) -> Unit,
     onTestConnection: (String, String) -> Unit,
-    onRunSpeedTest: (String, String) -> Unit,
+    onRunSpeedTest: (String, String, AdaptiveQualityMode, Int) -> Unit,
     onConnectionDraftChanged: () -> Unit,
     onModeChange: (AdaptiveQualityMode) -> Unit,
     onMaxHeightChange: (Int) -> Unit,
@@ -160,7 +160,7 @@ internal fun AdaptiveStreamingSettingsSection(
                         )
                     }
                     OutlinedButton(
-                        onClick = { onRunSpeedTest(baseUrlDraft, tokenDraft) },
+                        onClick = { onRunSpeedTest(baseUrlDraft, tokenDraft, mode, maxHeight) },
                         enabled = !connectionState.isBusy() && !probeState.isBusy(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -192,7 +192,7 @@ internal fun AdaptiveStreamingSettingsSection(
                     },
                 )
                 Text(
-                    text = "Connection test is read-only. Speed test downloads 1.1 MB and changes neither playback nor server telemetry.",
+                    text = "Connection test is read-only. Speed test downloads 1.1 MB; in Recommend only mode, the local result is compared with approved profile thresholds and never sent as telemetry.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

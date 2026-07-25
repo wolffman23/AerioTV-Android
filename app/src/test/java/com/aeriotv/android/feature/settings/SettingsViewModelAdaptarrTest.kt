@@ -2,16 +2,21 @@ package com.aeriotv.android.feature.settings
 
 import com.aeriotv.android.core.network.TMDBService
 import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
+import com.aeriotv.android.core.network.adaptarr.AdaptarrConfigResponse
 import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
 import com.aeriotv.android.core.network.adaptarr.AdaptarrDiagnostics
+import com.aeriotv.android.core.network.adaptarr.AdaptarrProfile
+import com.aeriotv.android.core.network.adaptarr.AdaptarrProfileMode
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeMeasurement
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeSource
 import com.aeriotv.android.core.network.adaptarr.AdaptarrTelemetryConfidence
 import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
+import com.aeriotv.android.core.preferences.AdaptiveQualityMode
 import com.aeriotv.android.core.preferences.AppPreferences
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +30,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -262,4 +268,200 @@ class SettingsViewModelAdaptarrTest {
         verify(exactly = 1) { diagnostics.probeFinished(result) }
         verify(exactly = 0) { diagnostics.probeCancelled() }
     }
+
+    @Test
+    fun `fresh recommend-only speed test selects local approved profile without telemetry`() =
+        runTest(dispatcher.scheduler) {
+            val measurement = AdaptiveProbeMeasurement(
+                networkKey = "e".repeat(64),
+                measuredThroughputBps = 8_000_000L,
+                sampleCount = 1,
+                confidence = AdaptarrTelemetryConfidence.Low,
+                measuredAtElapsedRealtimeMs = 100L,
+            )
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh)
+            coEvery { client.configuration(any(), any()) } returns AdaptarrConfigResponse(
+                schemaVersion = 1,
+                protocolVersion = 1,
+                generationId = "12345678-1234-4abc-8def-1234567890ab",
+                generatedAt = "2026-07-24T00:00:00Z",
+                profiles = mapOf(
+                    "1080p" to AdaptarrProfile(
+                        id = 7,
+                        name = "Adaptarr 1080p Passthrough",
+                        width = 1920,
+                        height = 1080,
+                        mode = AdaptarrProfileMode.Passthrough,
+                        estimatedBitrateBps = 10_000_000L,
+                        minimumThroughputBps = 12_000_000L,
+                    ),
+                    "720p" to AdaptarrProfile(
+                        id = 8,
+                        name = "Adaptarr 720p NVENC",
+                        width = 1280,
+                        height = 720,
+                        mode = AdaptarrProfileMode.Transcode,
+                        estimatedBitrateBps = 4_000_000L,
+                        minimumThroughputBps = 4_800_000L,
+                    ),
+                ),
+            )
+
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Recommend,
+                1080,
+            )
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { client.configuration("https://adaptarr.local", "t".repeat(32)) }
+            coVerify(exactly = 1) {
+                prefs.setAdaptarrLastDecision("Local recommendation (low confidence): Adaptarr 720p NVENC (720p).")
+            }
+            coVerify(exactly = 0) { client.reportProbe(any(), any(), any()) }
+            coVerify(exactly = 0) { client.reportTelemetry(any(), any(), any()) }
+            coVerify(exactly = 0) { client.telemetrySummary(any(), any(), any()) }
+            coVerify(exactly = 0) { client.recommendation(any(), any(), any()) }
+        }
+
+    @Test
+    fun `cached and off speed tests do not read configuration or write a decision`() =
+        runTest(dispatcher.scheduler) {
+            val measurement = AdaptiveProbeMeasurement(
+                networkKey = "f".repeat(64),
+                measuredThroughputBps = 8_000_000L,
+                sampleCount = 1,
+                confidence = AdaptarrTelemetryConfidence.Low,
+                measuredAtElapsedRealtimeMs = 100L,
+            )
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Cached)
+
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Recommend,
+                720,
+            )
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { client.configuration(any(), any()) }
+            coVerify(exactly = 0) { prefs.setAdaptarrLastDecision(any()) }
+
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh)
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Off,
+                720,
+            )
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { client.configuration(any(), any()) }
+            coVerify(exactly = 0) { prefs.setAdaptarrLastDecision(any()) }
+        }
+
+    @Test
+    fun `cancelling config read after a fresh probe cannot save a stale decision`() =
+        runTest(dispatcher.scheduler) {
+            val measurement = AdaptiveProbeMeasurement(
+                networkKey = "1".repeat(64),
+                measuredThroughputBps = 8_000_000L,
+                sampleCount = 1,
+                confidence = AdaptarrTelemetryConfidence.Low,
+                measuredAtElapsedRealtimeMs = 100L,
+            )
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh)
+            var configCancelled = false
+            coEvery { client.configuration(any(), any()) } coAnswers {
+                try {
+                    awaitCancellation()
+                } finally {
+                    configCancelled = true
+                }
+            }
+
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Recommend,
+                720,
+            )
+            runCurrent()
+            viewModel.resetAdaptarrConnectionState()
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { client.configuration(any(), any()) }
+            assertTrue(configCancelled)
+            coVerify(exactly = 0) { prefs.setAdaptarrLastDecision(any()) }
+        }
+
+    @Test
+    fun `config failure saves a fixed local unavailable decision without report calls`() =
+        runTest(dispatcher.scheduler) {
+            val measurement = AdaptiveProbeMeasurement(
+                networkKey = "2".repeat(64),
+                measuredThroughputBps = 8_000_000L,
+                sampleCount = 1,
+                confidence = AdaptarrTelemetryConfidence.Low,
+                measuredAtElapsedRealtimeMs = 100L,
+            )
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh)
+            coEvery { client.configuration(any(), any()) } throws
+                IllegalStateException("token and endpoint must not enter the decision")
+
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Recommend,
+                720,
+            )
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { prefs.setAdaptarrLastDecision("Local recommendation unavailable.") }
+            coVerify(exactly = 0) { client.reportProbe(any(), any(), any()) }
+            coVerify(exactly = 0) { client.reportTelemetry(any(), any(), any()) }
+            coVerify(exactly = 0) { client.telemetrySummary(any(), any(), any()) }
+            coVerify(exactly = 0) { client.recommendation(any(), any(), any()) }
+        }
+
+    @Test
+    fun `changing maximum height cancels an in-flight local recommendation`() =
+        runTest(dispatcher.scheduler) {
+            val measurement = AdaptiveProbeMeasurement(
+                networkKey = "3".repeat(64),
+                measuredThroughputBps = 8_000_000L,
+                sampleCount = 1,
+                confidence = AdaptarrTelemetryConfidence.Low,
+                measuredAtElapsedRealtimeMs = 100L,
+            )
+            coEvery { probeCoordinator.probe(any(), any()) } returns
+                AdaptiveProbeResult.Success(measurement, AdaptiveProbeSource.Fresh)
+            var configCancelled = false
+            coEvery { client.configuration(any(), any()) } coAnswers {
+                try {
+                    awaitCancellation()
+                } finally {
+                    configCancelled = true
+                }
+            }
+
+            viewModel.runAdaptarrSpeedTest(
+                "https://adaptarr.local",
+                "t".repeat(32),
+                AdaptiveQualityMode.Recommend,
+                1080,
+            )
+            runCurrent()
+            viewModel.setAdaptiveMaxHeight(720)
+            advanceUntilIdle()
+
+            assertTrue(configCancelled)
+            coVerify(exactly = 0) { prefs.setAdaptarrLastDecision(any()) }
+        }
 }

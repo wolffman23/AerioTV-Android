@@ -7,6 +7,7 @@ import com.aeriotv.android.core.category.CustomCategoryEntry
 import com.aeriotv.android.core.category.ProgramCategory
 import com.aeriotv.android.core.network.TMDBService
 import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
+import com.aeriotv.android.core.network.adaptarr.AdaptarrConfigResponse
 import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
 import com.aeriotv.android.core.network.adaptarr.AdaptarrDiagnostics
 import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
@@ -312,11 +313,13 @@ class SettingsViewModel @Inject constructor(
     val adaptarrToken: Flow<String> = prefs.adaptarrToken
     val adaptiveQualityMode: Flow<AdaptiveQualityMode> = prefs.adaptiveQualityMode
     fun setAdaptiveQualityMode(value: AdaptiveQualityMode) {
+        cancelLocalRecommendationIfRunning()
         viewModelScope.launch { prefs.setAdaptiveQualityMode(value) }
     }
 
     val adaptiveMaxHeight: Flow<Int> = prefs.adaptiveMaxHeight
     fun setAdaptiveMaxHeight(value: Int) {
+        cancelLocalRecommendationIfRunning()
         viewModelScope.launch { prefs.setAdaptiveMaxHeight(value) }
     }
 
@@ -369,6 +372,14 @@ class SettingsViewModel @Inject constructor(
     private val _adaptarrProbeState = MutableStateFlow(AdaptarrProbeState.Idle)
     val adaptarrProbeState: StateFlow<AdaptarrProbeState> = _adaptarrProbeState.asStateFlow()
     private var adaptarrConnectionJob: Job? = null
+    private var localRecommendationInFlight = false
+
+    private fun cancelLocalRecommendationIfRunning() {
+        if (localRecommendationInFlight) {
+            adaptarrConnectionJob?.cancel()
+            _adaptarrProbeState.value = AdaptarrProbeState.Idle
+        }
+    }
 
     fun resetAdaptarrConnectionState() {
         adaptarrConnectionJob?.cancel()
@@ -429,7 +440,20 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun runAdaptarrSpeedTest(baseUrl: String, token: String) {
+    fun runAdaptarrSpeedTest(baseUrl: String, token: String) =
+        runAdaptarrSpeedTest(baseUrl, token, AdaptiveQualityMode.Off, 720)
+
+    /**
+     * Runs an explicit local speed test. In Recommend mode a fresh measurement is
+     * compared locally with trusted configuration thresholds; no measurement,
+     * network key, telemetry, or recommendation request leaves the device.
+     */
+    fun runAdaptarrSpeedTest(
+        baseUrl: String,
+        token: String,
+        mode: AdaptiveQualityMode,
+        maxHeight: Int,
+    ) {
         adaptarrConnectionJob?.cancel()
         adaptarrConnectionJob = viewModelScope.launch {
             _adaptarrConnectionState.value = AdaptarrConnectionState.Idle
@@ -453,6 +477,54 @@ class SettingsViewModel @Inject constructor(
                 AdaptiveProbeResult.Unavailable -> AdaptarrProbeState.Unavailable
                 AdaptiveProbeResult.Stale -> AdaptarrProbeState.NetworkChanged
             }
+            if (result is AdaptiveProbeResult.Success &&
+                result.source == AdaptiveProbeSource.Fresh &&
+                mode == AdaptiveQualityMode.Recommend
+            ) {
+                updateLocalRecommendation(baseUrl, token, maxHeight, result.measurement.measuredThroughputBps)
+            }
+        }
+    }
+
+    private suspend fun updateLocalRecommendation(
+        baseUrl: String,
+        token: String,
+        maxHeight: Int,
+        throughputBps: Long,
+    ) {
+        localRecommendationInFlight = true
+        try {
+            val configuration = try {
+                adaptarrClient.configuration(baseUrl, token)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                prefs.setAdaptarrLastDecision("Local recommendation unavailable.")
+                return
+            }
+            prefs.setAdaptarrLastDecision(
+                localRecommendationText(configuration, maxHeight, throughputBps),
+            )
+        } finally {
+            localRecommendationInFlight = false
+        }
+    }
+
+    private fun localRecommendationText(
+        configuration: AdaptarrConfigResponse,
+        maxHeight: Int,
+        throughputBps: Long,
+    ): String {
+        val eligible = configuration.profiles.values
+            .filter { it.height <= maxHeight }
+            .sortedBy { it.height }
+        val selected = eligible.lastOrNull { throughputBps >= it.minimumThroughputBps }
+        return when {
+            selected != null ->
+                "Local recommendation (low confidence): ${selected.name} (${selected.height}p)."
+            eligible.isNotEmpty() ->
+                "Local recommendation (low confidence): ${eligible.first().name} (${eligible.first().height}p) may exceed measured bandwidth."
+            else -> "Local recommendation unavailable."
         }
     }
 
