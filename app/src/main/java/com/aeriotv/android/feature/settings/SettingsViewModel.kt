@@ -316,7 +316,6 @@ class SettingsViewModel @Inject constructor(
     val adaptarrToken: Flow<String> = prefs.adaptarrToken
     val adaptiveQualityMode: Flow<AdaptiveQualityMode> = prefs.adaptiveQualityMode
     fun setAdaptiveQualityMode(value: AdaptiveQualityMode) {
-        cancelLocalRecommendationIfRunning()
         viewModelScope.launch { prefs.setAdaptiveQualityMode(value) }
     }
 

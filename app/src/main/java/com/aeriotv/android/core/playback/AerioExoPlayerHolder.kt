@@ -240,6 +240,7 @@ class AerioExoPlayerHolder @Inject constructor(
         artworkUri: android.net.Uri? = null,
         bypassCooldown: Boolean = false,
         keepaliveHoldMs: Long = 5_000L,
+        beforePlay: (() -> Boolean)? = null,
     ): Boolean = reprimeMutex.withLock {
         val now = android.os.SystemClock.elapsedRealtime()
         if (!bypassCooldown && now - lastForcedReloadAtMs < reloadCooldownMs) {
@@ -275,6 +276,11 @@ class AerioExoPlayerHolder @Inject constructor(
             }
             // Attach (or definitively fail) the keepalive before dropping the player's connection.
             withTimeoutOrNull(4_000L) { connected.await() }
+            // Evaluate session ownership under the same mutex immediately before touching the
+            // singleton player. A stale quality task may have started a keepalive already, but
+            // must never retune a newer channel or route after its authorization is invalidated.
+            val mayPlay = withContext(Dispatchers.Main) { beforePlay?.invoke() ?: true }
+            if (!mayPlay) return@withLock false
             withContext(Dispatchers.Main) { playUrl(url, title, subtitle, artworkUri) }
             // Hold until ExoPlayer's reconnect is established (client count back >= 2).
             delay(keepaliveHoldMs)
@@ -475,7 +481,7 @@ class AerioExoPlayerHolder @Inject constructor(
                     watchdogScope.launch {
                         val fresh = runCatching { hook() }.getOrNull()
                         if (!fresh.isNullOrBlank() && fresh != lastPlayUrl) {
-                            Log.w(TAG, "[RETUNE] terminal error; re-priming onto reprobed url $fresh")
+                            Log.w(TAG, "[RETUNE] terminal error; re-priming reprobed source")
                             withContext(Dispatchers.Main) {
                                 playUrl(fresh, lastPlayTitle, lastPlaySubtitle, lastPlayArtworkUri)
                             }
@@ -634,7 +640,7 @@ class AerioExoPlayerHolder @Inject constructor(
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(
                     autoDataSourceFactory,
-                    DefaultExtractorsFactory().setTsExtractorMode(TsExtractor.MODE_SINGLE_PMT),
+                    captionAwareTsExtractorsFactory(),
                 ),
             )
             // Request audio focus + declare media-usage attributes. WITHOUT
@@ -847,11 +853,14 @@ class AerioExoPlayerHolder @Inject constructor(
     }
 
     /** TS-only extractor factory shared by the live raw-TS path and the
-     *  timeshift buffer reader (same no-sniff rationale, see buildMediaSource). */
+     *  timeshift buffer reader (same no-sniff rationale, see buildMediaSource).
+     *  The shared factory also supplies a conservative CEA-608/CC1 fallback for
+     *  descriptor-less MPEG-TS captions. */
     private fun tsOnlyExtractorsFactory(): ExtractorsFactory = ExtractorsFactory {
-        val all: Array<Extractor> = DefaultExtractorsFactory()
-            .setTsExtractorMode(TsExtractor.MODE_SINGLE_PMT)
-            .createExtractors()
+        val all: Array<Extractor> = captionAwareTsExtractorsFactory().createExtractors(
+            android.net.Uri.EMPTY,
+            emptyMap(),
+        )
         val tsOnly: List<Extractor> = all.filterIsInstance<TsExtractor>()
         if (tsOnly.isNotEmpty()) tsOnly.toTypedArray() else all
     }

@@ -1,10 +1,17 @@
 package com.aeriotv.android.core.network.adaptarr
 
+import android.content.Context
+import com.aeriotv.android.core.preferences.AppPreferences
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -29,6 +36,28 @@ class AdaptiveProbeCoordinatorTest {
     }
 
     @Test
+    fun `published identity starts current and synchronously publishes privacy safe updates`() {
+        val tracker = AdaptiveNetworkChangeTracker(wifi)
+        val published: StateFlow<AdaptiveNetworkIdentity> = tracker.identity
+        val cellularVpn = AdaptiveNetworkIdentity(
+            transport = AdaptiveTransport.Cellular,
+            metered = true,
+            vpn = true,
+        )
+
+        assertEquals(wifi, published.value)
+        assertTrue(tracker.update(cellularVpn))
+        assertEquals(cellularVpn, published.value)
+        assertEquals(
+            setOf("transport", "metered", "vpn"),
+            AdaptiveNetworkIdentity::class.java.declaredFields
+                .filterNot { it.isSynthetic || it.name.startsWith("$") }
+                .map { it.name }
+                .toSet(),
+        )
+    }
+
+    @Test
     fun `relevant network identity change invalidates and advances baseline`() {
         val tracker = AdaptiveNetworkChangeTracker(wifi)
         val meteredWifi = wifi.copy(metered = true)
@@ -37,6 +66,34 @@ class AdaptiveProbeCoordinatorTest {
         assertFalse(tracker.update(meteredWifi.copy()))
         assertTrue(tracker.update(meteredWifi.copy(vpn = true)))
         assertTrue(tracker.update(meteredWifi.copy(transport = AdaptiveTransport.Cellular)))
+    }
+
+    @Test
+    fun `automatic session probe is fresh only and never persists diagnostics`() = runTest {
+        val context = mockk<Context>()
+        val client = mockk<AdaptarrClient>()
+        val preferences = mockk<AppPreferences>(relaxed = true)
+        every { context.getSystemService(Context.CONNECTIVITY_SERVICE) } returns null
+        coEvery { client.downloadProbe(any(), any(), any()) } answers {
+            ByteArray(thirdArg<Int>())
+        }
+        val coordinator = AdaptiveProbeCoordinator.forTesting(
+            context = context,
+            client = client,
+            preferences = preferences,
+            elapsedRealtimeMs = { testScheduler.currentTime },
+        )
+
+        val result = coordinator.probeForAutomaticSession(
+            baseUrl = "https://adaptarr.example/proxy",
+            token = "t".repeat(32),
+        )
+
+        assertEquals(AdaptiveProbeSource.Fresh, result.success().source)
+        coVerify(exactly = 0) { preferences.setAdaptarrLastMeasuredThroughputBps(any()) }
+        coVerify(exactly = 0) { client.reportProbe(any(), any(), any()) }
+        coVerify(exactly = 0) { client.reportTelemetry(any(), any(), any()) }
+        coVerify(exactly = 0) { client.recommendation(any(), any(), any()) }
     }
 
     @Test
@@ -60,6 +117,20 @@ class AdaptiveProbeCoordinatorTest {
         assertEquals(AdaptiveProbeSource.Cached, cache.get(wifi, BASE).success().source)
         now += 1
         assertEquals(AdaptiveProbeSource.Fresh, cache.get(wifi, BASE).success().source)
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun `fresh automatic probe bypasses completed cache without invalidating ordinary cache`() = runTest {
+        var calls = 0
+        val cache = cache { key -> measurement(key, (++calls) * 1_000_000L, 10L) }
+
+        assertEquals(AdaptiveProbeSource.Fresh, cache.get(wifi, BASE).success().source)
+        assertEquals(AdaptiveProbeSource.Cached, cache.get(wifi, BASE).success().source)
+
+        val automatic = cache.getFresh(wifi, BASE).success()
+        assertEquals(AdaptiveProbeSource.Fresh, automatic.source)
+        assertEquals(2_000_000L, automatic.measurement.measuredThroughputBps)
         assertEquals(2, calls)
     }
 
@@ -106,13 +177,18 @@ class AdaptiveProbeCoordinatorTest {
         val cache = cache { gate.await() }
         val oldGeneration = cache.generationToken()
         val first = async {
-            cache.get(wifi, BASE, oldGeneration) {
-                try {
-                    gate.await()
-                } finally {
-                    operationCancelled = true
-                }
-            }
+            cache.get(
+                identity = wifi,
+                baseUrl = BASE,
+                expectedGeneration = oldGeneration,
+                operation = {
+                    try {
+                        gate.await()
+                    } finally {
+                        operationCancelled = true
+                    }
+                },
+            )
         }
         runCurrent()
 
@@ -122,10 +198,15 @@ class AdaptiveProbeCoordinatorTest {
         assertTrue(operationCancelled || gate.isCancelled)
 
         var called = false
-        val staleSnapshot = cache.get(wifi, BASE, oldGeneration) {
-            called = true
-            measurement(it, 1L, 1L)
-        }
+        val staleSnapshot = cache.get(
+            identity = wifi,
+            baseUrl = BASE,
+            expectedGeneration = oldGeneration,
+            operation = {
+                called = true
+                measurement(it, 1L, 1L)
+            },
+        )
         assertEquals(AdaptiveProbeResult.Stale, staleSnapshot)
         assertTrue(!called)
     }

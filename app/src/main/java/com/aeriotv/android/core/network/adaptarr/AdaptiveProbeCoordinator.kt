@@ -15,6 +15,9 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Process-local entry point for bounded, network-keyed Adaptarr measurements.
@@ -24,11 +27,27 @@ import kotlinx.coroutines.SupervisorJob
  * URL—never SSID/location—and invalidates synchronously on network callbacks.
  */
 @Singleton
-class AdaptiveProbeCoordinator @Inject constructor(
+class AdaptiveProbeCoordinator private constructor(
     @ApplicationContext context: Context,
     private val client: AdaptarrClient,
     preferences: AppPreferences,
+    private val elapsedRealtimeMs: () -> Long,
 ) {
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        client: AdaptarrClient,
+        preferences: AppPreferences,
+    ) : this(context, client, preferences, SystemClock::elapsedRealtime)
+
+    companion object {
+        internal fun forTesting(
+            context: Context,
+            client: AdaptarrClient,
+            preferences: AppPreferences,
+            elapsedRealtimeMs: () -> Long,
+        ) = AdaptiveProbeCoordinator(context, client, preferences, elapsedRealtimeMs)
+    }
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -38,14 +57,17 @@ class AdaptiveProbeCoordinator @Inject constructor(
     )
     private val runner = AdaptiveProbeRunner(
         transport = AdaptiveProbeTransport(client::downloadProbe),
-        elapsedRealtimeMs = SystemClock::elapsedRealtime,
+        elapsedRealtimeMs = elapsedRealtimeMs,
     )
     private val cache = AdaptiveProbeCache(
         scope = scope,
-        elapsedRealtimeMs = SystemClock::elapsedRealtime,
+        elapsedRealtimeMs = elapsedRealtimeMs,
         processSecret = processSecret,
     )
     private val networkChangeTracker = AdaptiveNetworkChangeTracker(currentIdentity())
+
+    /** Privacy-safe identity of the current default network for local policy decisions. */
+    internal val defaultNetworkIdentity: StateFlow<AdaptiveNetworkIdentity> = networkChangeTracker.identity
 
     // Process-lifetime registration: this object and its SupervisorJob are singletons.
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -85,13 +107,47 @@ class AdaptiveProbeCoordinator @Inject constructor(
         // this snapshot changes the generation, causing get() to return Stale.
         val generation = cache.generationToken()
         val identity = currentIdentity()
-        val result = cache.get(identity, normalizedBase, generation) { networkKey ->
-            runner.execute(normalizedBase, normalizedToken, networkKey)
-        }
+        val result = cache.get(
+            identity = identity,
+            baseUrl = normalizedBase,
+            expectedGeneration = generation,
+            operation = { networkKey ->
+                runner.execute(normalizedBase, normalizedToken, networkKey)
+            },
+        )
         if (result is AdaptiveProbeResult.Success && result.source == AdaptiveProbeSource.Fresh) {
             persistence.persist(result.measurement)
         }
         return result
+    }
+
+    /**
+     * Fresh, process-only measurement for an eligible automatic playback session.
+     *
+     * This bypasses completed cache entries and intentionally does not persist the
+     * measurement or contact telemetry/recommendation endpoints. A network change
+     * after the generation snapshot resolves to [AdaptiveProbeResult.Stale].
+     */
+    internal suspend fun probeForAutomaticSession(
+        baseUrl: String,
+        token: String,
+    ): AdaptiveProbeResult {
+        val normalizedBase = normalizeAdaptarrBaseUrl(baseUrl)
+            ?.takeIf { it.isNotEmpty() }
+            ?: return AdaptiveProbeResult.Unavailable
+        val normalizedToken = normalizeAdaptarrToken(token)
+            ?.takeIf { it.isNotEmpty() }
+            ?: return AdaptiveProbeResult.Unavailable
+        val generation = cache.generationToken()
+        val identity = defaultNetworkIdentity.value
+        return cache.getFresh(
+            identity = identity,
+            baseUrl = normalizedBase,
+            expectedGeneration = generation,
+            operation = { networkKey ->
+                runner.execute(normalizedBase, normalizedToken, networkKey)
+            },
+        )
     }
 
     internal fun invalidate() = cache.invalidateNow()
@@ -123,12 +179,13 @@ private fun NetworkCapabilities.toAdaptiveNetworkIdentity(): AdaptiveNetworkIden
 
 /** Tracks only the privacy-safe identity fields that partition the probe cache. */
 internal class AdaptiveNetworkChangeTracker(initialIdentity: AdaptiveNetworkIdentity) {
-    private var identity = initialIdentity
+    private val mutableIdentity = MutableStateFlow(initialIdentity)
+    val identity: StateFlow<AdaptiveNetworkIdentity> = mutableIdentity.asStateFlow()
 
     @Synchronized
     fun update(nextIdentity: AdaptiveNetworkIdentity): Boolean {
-        if (nextIdentity == identity) return false
-        identity = nextIdentity
+        if (nextIdentity == mutableIdentity.value) return false
+        mutableIdentity.value = nextIdentity
         return true
     }
 }

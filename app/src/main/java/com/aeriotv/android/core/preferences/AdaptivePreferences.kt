@@ -17,8 +17,7 @@ enum class AdaptiveQualityMode(val wire: String) {
             when (wire) {
                 Off.wire -> Off
                 Recommend.wire -> Recommend
-                // Automatic remains defined for forward-compatible storage,
-                // but cannot become effective before rollout safeguards land.
+                Auto.wire -> Auto
                 else -> Off
             }
     }

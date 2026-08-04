@@ -626,12 +626,7 @@ class AppPreferences @Inject constructor(
         AdaptiveQualityMode.fromWire(prefs[KEY_ADAPTIVE_QUALITY_MODE])
     }
     suspend fun setAdaptiveQualityMode(value: AdaptiveQualityMode) {
-        val effective = if (value == AdaptiveQualityMode.Auto) {
-            AdaptiveQualityMode.Off
-        } else {
-            value
-        }
-        store.edit { it[KEY_ADAPTIVE_QUALITY_MODE] = effective.wire }
+        store.edit { it[KEY_ADAPTIVE_QUALITY_MODE] = value.wire }
     }
 
     /** Explicit device-local consent for advisory telemetry dry-run reporting. */

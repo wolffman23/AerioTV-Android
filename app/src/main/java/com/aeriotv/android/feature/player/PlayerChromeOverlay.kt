@@ -1,9 +1,13 @@
 package com.aeriotv.android.feature.player
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -156,6 +160,11 @@ fun PlayerChromeOverlay(
     onShowSubtitles: () -> Unit,
     onShowAudioTracks: () -> Unit,
     onShowPlaybackSpeed: () -> Unit,
+    alphaAvailable: Boolean = false,
+    alphaActiveProfileId: Int? = null,
+    onSelectAlphaProfile: (Int) -> Unit = {},
+    onRestoreAlpha: () -> Unit = {},
+    onRunDebug480pCanary: (() -> Unit)? = null,
     aspectModeLabel: String,
     onCycleAspect: () -> Unit,
     onToggleAudioOnly: () -> Unit,
@@ -447,6 +456,19 @@ fun PlayerChromeOverlay(
                             moreOpen = false
                             onShowPlaybackSpeed()
                         },
+                        alphaAvailable = alphaAvailable,
+                        alphaActiveProfileId = alphaActiveProfileId,
+                        onSelectAlphaProfile = { profileId ->
+                            moreOpen = false
+                            onSelectAlphaProfile(profileId)
+                        },
+                        onRestoreAlpha = {
+                            moreOpen = false
+                            onRestoreAlpha()
+                        },
+                        onRunDebug480pCanary = onRunDebug480pCanary?.let { callback ->
+                            { moreOpen = false; callback() }
+                        },
                         onRecord = {
                             moreOpen = false
                             recordCurrent()
@@ -563,6 +585,19 @@ fun PlayerChromeOverlay(
                         onPlaybackSpeed = {
                             moreOpen = false
                             onShowPlaybackSpeed()
+                        },
+                        alphaAvailable = alphaAvailable,
+                        alphaActiveProfileId = alphaActiveProfileId,
+                        onSelectAlphaProfile = { profileId ->
+                            moreOpen = false
+                            onSelectAlphaProfile(profileId)
+                        },
+                        onRestoreAlpha = {
+                            moreOpen = false
+                            onRestoreAlpha()
+                        },
+                        onRunDebug480pCanary = onRunDebug480pCanary?.let { callback ->
+                            { moreOpen = false; callback() }
                         },
                         onRecord = {
                             moreOpen = false
@@ -905,6 +940,11 @@ private fun PlayerMoreMenu(
     onSubtitles: () -> Unit,
     onAudioTracks: () -> Unit,
     onPlaybackSpeed: () -> Unit,
+    alphaAvailable: Boolean,
+    alphaActiveProfileId: Int?,
+    onSelectAlphaProfile: (Int) -> Unit,
+    onRestoreAlpha: () -> Unit,
+    onRunDebug480pCanary: (() -> Unit)?,
     onRecord: () -> Unit,
     onSleepTimer: () -> Unit,
     onStreamInfo: () -> Unit,
@@ -923,6 +963,7 @@ private fun PlayerMoreMenu(
     // already equal the dark scheme there); in light mode this prevents a white
     // menu with dark-on-dark text.
     val moreMenuTheme = LocalAppTheme.current
+    var qualityMenuOpen by remember(expanded) { mutableStateOf(false) }
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = moreMenuTheme.accentPrimary,
@@ -933,10 +974,80 @@ private fun PlayerMoreMenu(
     ) {
     DropdownMenu(
         expanded = expanded,
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (qualityMenuOpen) qualityMenuOpen = false else onDismiss()
+        },
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        if (isTv) {
+        AnimatedContent(
+            targetState = qualityMenuOpen,
+            transitionSpec = {
+                slideInHorizontally { width -> if (targetState) width else -width } togetherWith
+                    slideOutHorizontally { width -> if (targetState) -width else width }
+            },
+            label = "player-quality-menu",
+        ) { showingQualityMenu ->
+            if (showingQualityMenu) {
+                // AnimatedContent places multiple direct children in one content slot.
+                // Keep this page as one vertical layout root so every menu item gets
+                // its own row instead of being drawn on top of its siblings.
+                Column {
+                    DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Tune,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    },
+                    text = { Text("‹  Quality") },
+                    onClick = { qualityMenuOpen = false },
+                )
+                if (alphaAvailable) {
+                    sessionQualityMenuOptions(
+                        activeProfileId = alphaActiveProfileId,
+                        includeDebugCanary = onRunDebug480pCanary != null,
+                    ).forEach { option ->
+                        DropdownMenuItem(
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Tune,
+                                    contentDescription = null,
+                                    tint = if (option.isActive) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface,
+                                )
+                            },
+                            text = {
+                                Text(
+                                    if (option.isDebug) option.label
+                                    else if (option.isActive) "${option.label} active for this session"
+                                    else if (option.profileId == null) "Restore source quality"
+                                    else "Use ${option.label} for this session",
+                                )
+                            },
+                            enabled = !option.isActive,
+                            onClick = {
+                                when {
+                                    option.isDebug -> onRunDebug480pCanary?.invoke()
+                                    option.profileId == null -> onRestoreAlpha()
+                                    else -> onSelectAlphaProfile(option.profileId)
+                                }
+                            },
+                        )
+                    }
+                } else {
+                    onRunDebug480pCanary?.let { runCanary ->
+                        DropdownMenuItem(
+                            text = { Text("Debug: run 480p Auto canary (3 Mbps)") },
+                            onClick = runCanary,
+                        )
+                    }
+                }
+                }
+            } else {
+                // The root Options page needs the same single layout root.
+                Column {
+                    if (isTv) {
             // #10 tvOS hint C: the Options panel advertises how to dismiss it.
             // Non-interactive header (D-pad focus skips it and lands on the first
             // row); Back closes the dropdown, which the "‹" chevron represents.
@@ -980,6 +1091,24 @@ private fun PlayerMoreMenu(
             text = { Text("Playback Speed") },
             onClick = onPlaybackSpeed,
         )
+        if (alphaAvailable || onRunDebug480pCanary != null) {
+            DropdownMenuItem(
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Tune,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                },
+                text = {
+                    Text(
+                        if (alphaActiveProfileId == null) "Quality: Source"
+                        else "Quality: ${sessionQualityMenuOptions(alphaActiveProfileId, false).first { it.isActive }.label}",
+                    )
+                },
+                onClick = { qualityMenuOpen = true },
+            )
+        }
         // iOS Issue #26: cycle Fit -> Zoom -> Fill. Stays open so repeated
         // presses cycle; the label reflects the current mode.
         DropdownMenuItem(
@@ -1072,6 +1201,9 @@ private fun PlayerMoreMenu(
             },
             onClick = onAudioOnly,
         )
+                }
+            }
+        }
     }
     }
 }

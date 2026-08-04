@@ -76,19 +76,23 @@ class AppPreferencesAdaptiveTest {
     }
 
     @Test
-    fun `adaptive mode wire values round trip and unknown values fail closed`() {
+    fun `adaptive mode wire values recognize only explicit automatic storage`() {
         assertEquals("off", AdaptiveQualityMode.Off.wire)
         assertEquals("recommend", AdaptiveQualityMode.Recommend.wire)
         assertEquals("auto", AdaptiveQualityMode.Auto.wire)
         assertEquals(AdaptiveQualityMode.Off, AdaptiveQualityMode.fromWire(null))
         assertEquals(AdaptiveQualityMode.Off, AdaptiveQualityMode.fromWire("future"))
-        assertEquals(AdaptiveQualityMode.Off, AdaptiveQualityMode.fromWire("auto"))
+        assertEquals(AdaptiveQualityMode.Auto, AdaptiveQualityMode.fromWire("auto"))
     }
 
     @Test
-    fun `automatic mode remains unavailable and fails closed at persistence boundary`() = runTest {
+    fun `automatic mode persists and reads back only after explicit selection`() = runTest {
         preferences.setAdaptiveQualityMode(AdaptiveQualityMode.Auto)
-        assertEquals(AdaptiveQualityMode.Off, preferences.adaptiveQualityMode.first())
+        assertEquals(AdaptiveQualityMode.Auto, preferences.adaptiveQualityMode.first())
+        assertEquals(
+            "auto",
+            store.data.first()[stringPreferencesKey("adaptive_quality_mode")],
+        )
     }
 
     @Test
@@ -316,7 +320,7 @@ class AppPreferencesAdaptiveTest {
         assertTrue(preferences.adaptarrEnabled.first())
         assertEquals("https://adaptarr.local:9191/private-path", preferences.adaptarrBaseUrl.first())
         assertEquals(token, preferences.adaptarrToken.first())
-        assertEquals(AdaptiveQualityMode.Off, preferences.adaptiveQualityMode.first())
+        assertEquals(AdaptiveQualityMode.Auto, preferences.adaptiveQualityMode.first())
         assertEquals(720, preferences.adaptiveMaxHeight.first())
         assertEquals(1080, preferences.adaptiveCellularMaxHeight.first())
         assertEquals(1080, preferences.adaptiveFallbackHeight.first())

@@ -140,22 +140,47 @@ internal class AdaptiveProbeCache(
         operation: suspend (networkKey: String) -> AdaptiveProbeMeasurement,
     ): AdaptiveProbeResult = get(identity, baseUrl, generationToken(), operation)
 
+    suspend fun getFresh(identity: AdaptiveNetworkIdentity, baseUrl: String): AdaptiveProbeResult =
+        get(
+            identity,
+            baseUrl,
+            generationToken(),
+            requireNotNull(execute) { "probe executor required" },
+            useCachedResult = false,
+        )
+
+    suspend fun getFresh(
+        identity: AdaptiveNetworkIdentity,
+        baseUrl: String,
+        expectedGeneration: Long,
+        operation: suspend (networkKey: String) -> AdaptiveProbeMeasurement,
+    ): AdaptiveProbeResult = get(
+        identity,
+        baseUrl,
+        expectedGeneration,
+        operation,
+        useCachedResult = false,
+    )
+
     suspend fun get(
         identity: AdaptiveNetworkIdentity,
         baseUrl: String,
         expectedGeneration: Long,
         operation: suspend (networkKey: String) -> AdaptiveProbeMeasurement,
+        useCachedResult: Boolean = true,
     ): AdaptiveProbeResult {
         val cacheKey = CacheKey(identity, baseUrl)
         val deferred: Deferred<AdaptiveProbeResult> = synchronized(lock) {
             if (expectedGeneration != generation) return AdaptiveProbeResult.Stale
             val now = elapsedRealtimeMs()
             pruneExpired(now)
-            cache[cacheKey]?.let { entry ->
-                if (now < entry.expiresAtElapsedMs) {
-                    return AdaptiveProbeResult.Success(entry.measurement, AdaptiveProbeSource.Cached)
+            if (useCachedResult) {
+                cache[cacheKey]?.let { entry ->
+                    if (now < entry.expiresAtElapsedMs) {
+                        return AdaptiveProbeResult.Success(entry.measurement, AdaptiveProbeSource.Cached)
+                    }
+                    cache.remove(cacheKey)
                 }
-                cache.remove(cacheKey)
             }
 
             val epochKey = EpochKey(cacheKey, generation)

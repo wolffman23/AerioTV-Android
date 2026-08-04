@@ -77,7 +77,7 @@ internal fun AdaptiveStreamingSettingsSection(
 
     SettingsSection(
         header = "Adaptive Streaming",
-        footer = "Adaptarr settings, credentials, and measurements stay on this device and are not included in Drive sync. Recommendations cannot change playback in this build.",
+        footer = "Adaptarr settings, credentials, and measurements stay on this device and are not included in Drive sync.",
     ) {
         SettingsToggleRow(
             title = "Enable Adaptarr",
@@ -212,24 +212,18 @@ internal fun AdaptiveStreamingSettingsSection(
                 selected = mode == AdaptiveQualityMode.Recommend,
                 onClick = { onModeChange(AdaptiveQualityMode.Recommend) },
             )
+            SettingsSelectionRow(
+                label = "Automatic",
+                subtitle = "A fresh local test may briefly rebuffer this trusted live session. No telemetry and no shared channel setting changes.",
+                selected = mode == AdaptiveQualityMode.Auto,
+                onClick = { onModeChange(AdaptiveQualityMode.Auto) },
+            )
             SettingsToggleRow(
                 title = "Telemetry dry-run",
                 subtitle = "Off by default. A fresh Recommend-only test sends one opaque-key sample for an advisory only; no playback change. Samples expire from companion memory within one hour.",
                 checked = telemetryDryRunConsent,
                 onCheckedChange = onTelemetryDryRunConsentChange,
             )
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Text(
-                    text = "Automatic",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
-                )
-                Text(
-                    text = "Unavailable until controlled rollout safeguards are implemented.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                )
-            }
         }
     }
 

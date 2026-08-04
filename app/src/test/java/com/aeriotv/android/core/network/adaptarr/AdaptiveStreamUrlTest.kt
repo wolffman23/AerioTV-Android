@@ -135,6 +135,12 @@ class AdaptiveStreamUrlTest {
     }
 
     @Test
+    fun `refuses urls with leading or trailing whitespace without rewriting`() {
+        assertNull(AdaptiveStreamUrl.withOutputProfile(" $proxy", 30))
+        assertNull(AdaptiveStreamUrl.withOutputProfile("$proxy ", 30))
+    }
+
+    @Test
     fun `refuses a non positive output profile id`() {
         assertNull(AdaptiveStreamUrl.withOutputProfile(proxy, 0))
         assertNull(AdaptiveStreamUrl.withOutputProfile(proxy, -1))

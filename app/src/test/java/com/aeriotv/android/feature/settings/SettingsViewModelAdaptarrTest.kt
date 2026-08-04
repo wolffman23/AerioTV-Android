@@ -170,6 +170,21 @@ class SettingsViewModelAdaptarrTest {
     }
 
     @Test
+    fun `automatic mode is stored without starting local network or telemetry work`() =
+        runTest(dispatcher.scheduler) {
+            viewModel.setAdaptiveQualityMode(AdaptiveQualityMode.Auto)
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { prefs.setAdaptiveQualityMode(AdaptiveQualityMode.Auto) }
+            coVerify(exactly = 0) { client.configuration(any(), any()) }
+            coVerify(exactly = 0) { client.recommendation(any(), any(), any()) }
+            coVerify(exactly = 0) { client.reportProbe(any(), any(), any()) }
+            coVerify(exactly = 0) { client.reportTelemetry(any(), any(), any()) }
+            coVerify(exactly = 0) { probeCoordinator.probe(any(), any()) }
+            verify(exactly = 0) { diagnostics.probeStarted() }
+        }
+
+    @Test
     fun `speed test cancels connection test and draft reset cancels speed test`() = runTest(dispatcher.scheduler) {
         coEvery { client.testConnection(any(), any()) } coAnswers { awaitCancellation() }
         coEvery { probeCoordinator.probe(any(), any()) } coAnswers { awaitCancellation() }
