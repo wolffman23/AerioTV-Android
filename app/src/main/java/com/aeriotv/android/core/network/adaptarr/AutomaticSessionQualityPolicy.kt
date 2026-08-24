@@ -97,19 +97,11 @@ object AutomaticSessionQualityPolicy {
         }
         if (trustedProfiles.isEmpty()) return AutomaticSessionQualityDecision.NoChange
 
-        return if (input.transport == AutomaticSessionTransport.Cellular) {
-            trustedProfiles
-                .filter { it.height <= maximumHeight && throughputBps >= it.minimumThroughputBps }
-                .maxByOrNull { it.height }
-                ?.let { AutomaticSessionQualityDecision.OutputProfile(it.id) }
-                ?: AutomaticSessionQualityDecision.NoChange
-        } else {
-            if (trustedProfiles.any { it.height <= maximumHeight }) {
-                AutomaticSessionQualityDecision.Source
-            } else {
-                AutomaticSessionQualityDecision.NoChange
-            }
-        }
+        return trustedProfiles
+            .filter { it.height <= maximumHeight && throughputBps >= it.minimumThroughputBps }
+            .maxByOrNull { it.height }
+            ?.let { AutomaticSessionQualityDecision.OutputProfile(it.id) }
+            ?: AutomaticSessionQualityDecision.NoChange
     }
 
     private data class TrustedOutputProfile(val id: Int, val height: Int)

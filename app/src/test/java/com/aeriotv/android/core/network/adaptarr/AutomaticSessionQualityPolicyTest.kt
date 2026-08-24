@@ -56,10 +56,33 @@ class AutomaticSessionQualityPolicyTest {
     }
 
     @Test
-    fun `fresh noncellular measurement selects source rather than another output profile`() {
+    fun `fresh wifi measurement selects trusted 720p profile eight at its threshold`() {
         assertEquals(
-            AutomaticSessionQualityDecision.Source,
+            AutomaticSessionQualityDecision.OutputProfile(8),
             AutomaticSessionQualityPolicy.decide(input(transport = AutomaticSessionTransport.Wifi)),
+        )
+    }
+
+    @Test
+    fun `fresh ethernet measurement selects trusted 720p profile eight at its threshold`() {
+        assertEquals(
+            AutomaticSessionQualityDecision.OutputProfile(8),
+            AutomaticSessionQualityPolicy.decide(input(transport = AutomaticSessionTransport.Ethernet)),
+        )
+    }
+
+    @Test
+    fun `fresh wifi measurement selects trusted 480p when normal cap excludes 720p`() {
+        assertEquals(
+            AutomaticSessionQualityDecision.OutputProfile(9),
+            AutomaticSessionQualityPolicy.decide(
+                input(
+                    transport = AutomaticSessionTransport.Wifi,
+                    caps = AutomaticSessionQualityCaps(normalMaximumHeight = 480, cellularMaximumHeight = 720),
+                    probe = AutomaticSessionProbe.Fresh(2_000_000L),
+                    profiles = listOf(profile, lowProfile),
+                ),
+            ),
         )
     }
 
@@ -130,13 +153,22 @@ class AutomaticSessionQualityPolicyTest {
     }
 
     @Test
-    fun `fresh throughput below the trusted profile minimum never changes playback`() {
-        assertEquals(
-            AutomaticSessionQualityDecision.NoChange,
-            AutomaticSessionQualityPolicy.decide(
-                input(probe = AutomaticSessionProbe.Fresh(minimumThroughputBps - 1)),
-            ),
-        )
+    fun `fresh throughput below trusted profile minimum never changes playback on supported transports`() {
+        listOf(
+            AutomaticSessionTransport.Wifi,
+            AutomaticSessionTransport.Ethernet,
+            AutomaticSessionTransport.Cellular,
+        ).forEach { transport ->
+            assertEquals(
+                AutomaticSessionQualityDecision.NoChange,
+                AutomaticSessionQualityPolicy.decide(
+                    input(
+                        transport = transport,
+                        probe = AutomaticSessionProbe.Fresh(minimumThroughputBps - 1),
+                    ),
+                ),
+            )
+        }
     }
 
     private fun input(
