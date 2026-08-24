@@ -75,6 +75,16 @@ fun NetworkSettingsScreen(
         .collectAsStateWithLifecycle(initialValue = true)
     val backgroundRefreshIntervalMins by viewModel.backgroundRefreshIntervalMins
         .collectAsStateWithLifecycle(initialValue = 360)
+    val adaptarrEnabled by viewModel.adaptarrEnabled.collectAsStateWithLifecycle(initialValue = false)
+    val adaptiveMode by viewModel.adaptiveQualityMode
+        .collectAsStateWithLifecycle(initialValue = com.aeriotv.android.core.preferences.AdaptiveQualityMode.Off)
+    val adaptiveMaxHeight by viewModel.adaptiveMaxHeight.collectAsStateWithLifecycle(initialValue = 1080)
+    val adaptiveCellularMaxHeight by viewModel.adaptiveCellularMaxHeight.collectAsStateWithLifecycle(initialValue = 720)
+    val adaptiveFallbackHeight by viewModel.adaptiveFallbackHeight.collectAsStateWithLifecycle(initialValue = 720)
+    val adaptarrLastDecision by viewModel.adaptarrLastDecision.collectAsStateWithLifecycle(initialValue = "")
+    val adaptarrBaseUrl by viewModel.adaptarrBaseUrl.collectAsStateWithLifecycle(initialValue = "")
+    val adaptarrToken by viewModel.adaptarrToken.collectAsStateWithLifecycle(initialValue = "")
+    val adaptarrConnectionState by viewModel.adaptarrConnectionState.collectAsStateWithLifecycle()
 
     Column(modifier = Modifier.fillMaxSize()) {
         SettingsDetailTopBar(title = "Network", onBack = onBack)
@@ -113,6 +123,24 @@ fun NetworkSettingsScreen(
                 intervalMins = backgroundRefreshIntervalMins,
                 onToggle = viewModel::setBackgroundRefreshEnabled,
                 onSelectInterval = viewModel::setBackgroundRefreshIntervalMins,
+            )
+            AdaptiveStreamingSettingsSection(
+                enabled = adaptarrEnabled,
+                mode = adaptiveMode,
+                maxHeight = adaptiveMaxHeight,
+                cellularMaxHeight = adaptiveCellularMaxHeight,
+                fallbackHeight = adaptiveFallbackHeight,
+                lastDecision = adaptarrLastDecision,
+                baseUrl = adaptarrBaseUrl,
+                token = adaptarrToken,
+                connectionState = adaptarrConnectionState,
+                onEnabledChange = viewModel::setAdaptarrEnabled,
+                onSaveConnection = viewModel::saveAdaptarrConnection,
+                onTestConnection = viewModel::testAdaptarrConnection,
+                onModeChange = viewModel::setAdaptiveQualityMode,
+                onMaxHeightChange = viewModel::setAdaptiveMaxHeight,
+                onCellularMaxHeightChange = viewModel::setAdaptiveCellularMaxHeight,
+                onFallbackHeightChange = viewModel::setAdaptiveFallbackHeight,
             )
             // 104dp tail spacer clears the MainScaffold NavigationBar
             // (Column uses verticalScroll, not LazyColumn, so we can't

@@ -6,7 +6,11 @@ import com.aeriotv.android.core.category.CategoryPaletteState
 import com.aeriotv.android.core.category.CustomCategoryEntry
 import com.aeriotv.android.core.category.ProgramCategory
 import com.aeriotv.android.core.network.TMDBService
+import com.aeriotv.android.core.network.adaptarr.AdaptarrClient
+import com.aeriotv.android.core.network.adaptarr.AdaptarrConnectionTestResult
 import com.aeriotv.android.core.preferences.AppPreferences
+import com.aeriotv.android.core.preferences.AdaptiveQualityMode
+import com.aeriotv.android.core.preferences.AdaptarrConnectionSaveResult
 import com.aeriotv.android.ui.theme.AppTheme
 import com.aeriotv.android.ui.theme.AppearanceMode
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -16,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
@@ -27,6 +32,7 @@ import kotlinx.coroutines.launch
 class SettingsViewModel @Inject constructor(
     private val prefs: AppPreferences,
     private val tmdb: TMDBService,
+    private val adaptarrClient: AdaptarrClient,
 ) : ViewModel() {
 
     // Appearance
@@ -319,6 +325,87 @@ class SettingsViewModel @Inject constructor(
     val epgWindowHours: Flow<Int> = prefs.epgWindowHours
     fun setEpgWindowHours(value: Int) {
         viewModelScope.launch { prefs.setEpgWindowHours(value) }
+    }
+
+    // Adaptive-quality state remains device-local. This slice intentionally has
+    // no connection action, client, probe, telemetry, or player side effect.
+    val adaptarrEnabled: Flow<Boolean> = prefs.adaptarrEnabled
+    fun setAdaptarrEnabled(value: Boolean) {
+        viewModelScope.launch { prefs.setAdaptarrEnabled(value) }
+    }
+
+    val adaptarrBaseUrl: Flow<String> = prefs.adaptarrBaseUrl
+    val adaptarrToken: Flow<String> = prefs.adaptarrToken
+    val adaptiveQualityMode: Flow<AdaptiveQualityMode> = prefs.adaptiveQualityMode
+    fun setAdaptiveQualityMode(value: AdaptiveQualityMode) {
+        viewModelScope.launch { prefs.setAdaptiveQualityMode(value) }
+    }
+
+    val adaptiveMaxHeight: Flow<Int> = prefs.adaptiveMaxHeight
+    fun setAdaptiveMaxHeight(value: Int) {
+        viewModelScope.launch { prefs.setAdaptiveMaxHeight(value) }
+    }
+
+    val adaptiveCellularMaxHeight: Flow<Int> = prefs.adaptiveCellularMaxHeight
+    fun setAdaptiveCellularMaxHeight(value: Int) {
+        viewModelScope.launch { prefs.setAdaptiveCellularMaxHeight(value) }
+    }
+
+    val adaptiveFallbackHeight: Flow<Int> = prefs.adaptiveFallbackHeight
+    fun setAdaptiveFallbackHeight(value: Int) {
+        viewModelScope.launch { prefs.setAdaptiveFallbackHeight(value) }
+    }
+
+    val adaptarrTelemetryDryRunConsent: Flow<Boolean> = prefs.adaptarrTelemetryDryRunConsent
+    fun setAdaptarrTelemetryDryRunConsent(value: Boolean) {
+        viewModelScope.launch { prefs.setAdaptarrTelemetryDryRunConsent(value) }
+    }
+
+    val adaptarrLastMeasuredThroughputBps: Flow<Long> = prefs.adaptarrLastMeasuredThroughputBps
+    val adaptarrLastDecision: Flow<String> = prefs.adaptarrLastDecision
+
+    enum class AdaptarrConnectionState {
+        Idle, Saving, Saved, InvalidBaseUrl, InvalidToken, EncryptionFailed, PersistenceFailed,
+        Testing, Connected, Unauthorized, IncompatibleProtocol, RateLimited, ServiceUnavailable,
+        InvalidResponse, Unreachable,
+    }
+
+    private val _adaptarrConnectionState = MutableStateFlow(AdaptarrConnectionState.Idle)
+    val adaptarrConnectionState: StateFlow<AdaptarrConnectionState> = _adaptarrConnectionState.asStateFlow()
+
+    /** Saves only to the local encrypted preference boundary; it performs no I/O to Adaptarr. */
+    fun saveAdaptarrConnection(baseUrl: String, token: String) {
+        viewModelScope.launch {
+            _adaptarrConnectionState.value = AdaptarrConnectionState.Saving
+            _adaptarrConnectionState.value = try {
+                when (prefs.saveAdaptarrConnection(baseUrl, token)) {
+                    AdaptarrConnectionSaveResult.Saved -> AdaptarrConnectionState.Saved
+                    AdaptarrConnectionSaveResult.InvalidBaseUrl -> AdaptarrConnectionState.InvalidBaseUrl
+                    AdaptarrConnectionSaveResult.InvalidToken -> AdaptarrConnectionState.InvalidToken
+                    AdaptarrConnectionSaveResult.EncryptionFailed -> AdaptarrConnectionState.EncryptionFailed
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                AdaptarrConnectionState.PersistenceFailed
+            }
+        }
+    }
+
+    fun testAdaptarrConnection(baseUrl: String, token: String) {
+        viewModelScope.launch {
+            _adaptarrConnectionState.value = AdaptarrConnectionState.Testing
+            _adaptarrConnectionState.value = when (adaptarrClient.testConnection(baseUrl, token)) {
+                AdaptarrConnectionTestResult.Connected -> AdaptarrConnectionState.Connected
+                AdaptarrConnectionTestResult.InvalidSettings -> AdaptarrConnectionState.InvalidBaseUrl
+                AdaptarrConnectionTestResult.Unauthorized -> AdaptarrConnectionState.Unauthorized
+                AdaptarrConnectionTestResult.IncompatibleProtocol -> AdaptarrConnectionState.IncompatibleProtocol
+                AdaptarrConnectionTestResult.RateLimited -> AdaptarrConnectionState.RateLimited
+                AdaptarrConnectionTestResult.ServiceUnavailable -> AdaptarrConnectionState.ServiceUnavailable
+                AdaptarrConnectionTestResult.InvalidResponse -> AdaptarrConnectionState.InvalidResponse
+                AdaptarrConnectionTestResult.Unreachable -> AdaptarrConnectionState.Unreachable
+            }
+        }
     }
 
     // Audit task #48: master toggle for the periodic PlaylistRefreshWorker.

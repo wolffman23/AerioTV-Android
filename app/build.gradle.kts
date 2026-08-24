@@ -209,6 +209,11 @@ dependencies {
 
     // Pure-JVM unit tests for the cast HLS proxy remuxer (test scope only).
     testImplementation(libs.junit)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.mockk)
+    testImplementation(libs.ktor.client.mock)
+    testImplementation(libs.kotlinx.coroutines.test)
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.ktor.client.core)
@@ -261,4 +266,7 @@ dependencies {
     implementation(libs.androidx.profileinstaller)
 
     debugImplementation(libs.androidx.ui.tooling)
+
+    testImplementation(libs.ktor.client.mock)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

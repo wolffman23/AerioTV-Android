@@ -21,7 +21,6 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
-import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.Extractor
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.ts.TsExtractor
@@ -240,6 +239,8 @@ class AerioExoPlayerHolder @Inject constructor(
         artworkUri: android.net.Uri? = null,
         bypassCooldown: Boolean = false,
         keepaliveHoldMs: Long = 5_000L,
+        /** Evaluated on the player thread immediately before mutating playback. */
+        beforePlay: () -> Boolean = { true },
     ): Boolean = reprimeMutex.withLock {
         val now = android.os.SystemClock.elapsedRealtime()
         if (!bypassCooldown && now - lastForcedReloadAtMs < reloadCooldownMs) {
@@ -275,6 +276,13 @@ class AerioExoPlayerHolder @Inject constructor(
             }
             // Attach (or definitively fail) the keepalive before dropping the player's connection.
             withTimeoutOrNull(4_000L) { connected.await() }
+            // The authorization check belongs at the serialized playback boundary:
+            // stale automatic work must not touch the singleton player.
+            if (!beforePlay()) {
+                keepAlive.cancel()
+                runCatching { connHolder.get()?.disconnect() }
+                return@withLock false
+            }
             withContext(Dispatchers.Main) { playUrl(url, title, subtitle, artworkUri) }
             // Hold until ExoPlayer's reconnect is established (client count back >= 2).
             delay(keepaliveHoldMs)
@@ -721,7 +729,7 @@ class AerioExoPlayerHolder @Inject constructor(
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(
                     autoDataSourceFactory,
-                    DefaultExtractorsFactory().setTsExtractorMode(TsExtractor.MODE_SINGLE_PMT),
+                    captionAwareTsExtractorsFactory(),
                 ),
             )
             // Request audio focus + declare media-usage attributes. WITHOUT
@@ -951,9 +959,7 @@ class AerioExoPlayerHolder @Inject constructor(
      *  Both are sourced from DefaultExtractorsFactory so their configuration
      *  matches what the default pipeline would build. */
     private fun tsOnlyExtractorsFactory(): ExtractorsFactory = ExtractorsFactory {
-        val all: Array<Extractor> = DefaultExtractorsFactory()
-            .setTsExtractorMode(TsExtractor.MODE_SINGLE_PMT)
-            .createExtractors()
+        val all: Array<Extractor> = captionAwareTsExtractorsFactory().createExtractors()
         val ts: Extractor? = all.firstOrNull { it is TsExtractor }
         val fmp4: Extractor? = all.firstOrNull {
             it is androidx.media3.extractor.mp4.FragmentedMp4Extractor

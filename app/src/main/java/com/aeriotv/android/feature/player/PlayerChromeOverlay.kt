@@ -160,6 +160,10 @@ fun PlayerChromeOverlay(
     onShowSubtitles: () -> Unit,
     onShowAudioTracks: () -> Unit,
     onShowPlaybackSpeed: () -> Unit,
+    sessionQualityAvailable: Boolean = false,
+    activeSessionQualityProfileId: Int? = null,
+    onSelectSessionQuality: (Int) -> Unit = {},
+    onRestoreSessionQuality: () -> Unit = {},
     aspectModeLabel: String,
     onCycleAspect: () -> Unit,
     onToggleAudioOnly: () -> Unit,
@@ -453,6 +457,10 @@ fun PlayerChromeOverlay(
                             moreOpen = false
                             onShowPlaybackSpeed()
                         },
+                        sessionQualityAvailable = sessionQualityAvailable,
+                        activeSessionQualityProfileId = activeSessionQualityProfileId,
+                        onSelectSessionQuality = onSelectSessionQuality,
+                        onRestoreSessionQuality = onRestoreSessionQuality,
                         onRecord = {
                             moreOpen = false
                             recordCurrent()
@@ -571,6 +579,10 @@ fun PlayerChromeOverlay(
                             moreOpen = false
                             onShowPlaybackSpeed()
                         },
+                        sessionQualityAvailable = sessionQualityAvailable,
+                        activeSessionQualityProfileId = activeSessionQualityProfileId,
+                        onSelectSessionQuality = onSelectSessionQuality,
+                        onRestoreSessionQuality = onRestoreSessionQuality,
                         onRecord = {
                             moreOpen = false
                             recordCurrent()
@@ -915,6 +927,10 @@ private fun PlayerMoreMenu(
     onSubtitles: () -> Unit,
     onAudioTracks: () -> Unit,
     onPlaybackSpeed: () -> Unit,
+    sessionQualityAvailable: Boolean,
+    activeSessionQualityProfileId: Int?,
+    onSelectSessionQuality: (Int) -> Unit,
+    onRestoreSessionQuality: () -> Unit,
     onRecord: () -> Unit,
     onSleepTimer: () -> Unit,
     onStreamInfo: () -> Unit,
@@ -933,6 +949,7 @@ private fun PlayerMoreMenu(
     // already equal the dark scheme there); in light mode this prevents a white
     // menu with dark-on-dark text.
     val moreMenuTheme = LocalAppTheme.current
+    var qualityMenuOpen by remember { mutableStateOf(false) }
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = moreMenuTheme.accentPrimary,
@@ -943,9 +960,26 @@ private fun PlayerMoreMenu(
     ) {
     DropdownMenu(
         expanded = expanded,
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (qualityMenuOpen) qualityMenuOpen = false else onDismiss() },
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
+        if (qualityMenuOpen) {
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Filled.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface) },
+                text = { Text("‹  Quality") },
+                onClick = { qualityMenuOpen = false },
+            )
+            sessionQualityMenuOptions(activeSessionQualityProfileId, includeDebugCanary = false).forEach { option ->
+                DropdownMenuItem(
+                    leadingIcon = { Icon(Icons.Filled.Tune, null, tint = if (option.isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                    text = { Text(if (option.isActive) "${option.label} (active)" else if (option.profileId == null) "Source quality" else "Use ${option.label} for this session") },
+                    enabled = !option.isActive,
+                    onClick = {
+                        if (option.profileId == null) onRestoreSessionQuality() else onSelectSessionQuality(option.profileId)
+                    },
+                )
+            }
+        } else {
         if (isTv) {
             // #10 tvOS hint C: the Options panel advertises how to dismiss it.
             // Non-interactive header (D-pad focus skips it and lands on the first
@@ -990,6 +1024,17 @@ private fun PlayerMoreMenu(
             text = { Text("Playback Speed") },
             onClick = onPlaybackSpeed,
         )
+        if (sessionQualityAvailable) {
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Filled.Tune, null, tint = MaterialTheme.colorScheme.onSurface) },
+                text = {
+                    val active = sessionQualityMenuOptions(activeSessionQualityProfileId, includeDebugCanary = false)
+                        .first { it.isActive }
+                    Text("Quality: ${active.label}")
+                },
+                onClick = { qualityMenuOpen = true },
+            )
+        }
         // iOS Issue #26: cycle Fit -> Zoom -> Fill. Stays open so repeated
         // presses cycle; the label reflects the current mode.
         DropdownMenuItem(
@@ -1082,6 +1127,7 @@ private fun PlayerMoreMenu(
             },
             onClick = onAudioOnly,
         )
+        }
     }
     }
 }

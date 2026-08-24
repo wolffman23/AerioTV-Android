@@ -53,8 +53,24 @@ import com.aeriotv.android.core.data.EPGProgramme
 import com.aeriotv.android.core.data.M3UChannel
 import com.aeriotv.android.core.data.ProgramInfoTarget
 import com.aeriotv.android.core.data.guideMatchKey
+import com.aeriotv.android.core.network.adaptarr.AdaptiveProbeResult
+import com.aeriotv.android.core.network.adaptarr.AdaptiveTransport
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionEligibility
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionOutputProfile
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionProbe
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionProfileMode
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionQualityCaps
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionQualityController
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionQualityDecision
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionQualityFingerprint
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionQualityInput
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionQualityMode
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionQualityPolicy
+import com.aeriotv.android.core.network.adaptarr.AutomaticSessionTransport
+import com.aeriotv.android.core.preferences.AdaptiveQualityMode
 import com.aeriotv.android.core.pip.PipState
 import com.aeriotv.android.core.pip.findActivity
+import com.aeriotv.android.core.network.adaptarr.SessionOutputProfileAlpha
 import com.aeriotv.android.feature.livetv.RecordProgramSheet
 import com.aeriotv.android.feature.miniplayer.MiniPlayerViewModel
 import com.aeriotv.android.feature.multiview.AddToMultiviewSheet
@@ -65,6 +81,7 @@ import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -170,6 +187,17 @@ fun PlayerScreen(
     val exoHolder = remember { playerEntry.exoPlayerHolder() }
     val exoWindowState = remember { playerEntry.exoWindowState() }
     val timeshiftController = remember { playerEntry.timeshiftController() }
+    val appPreferences = remember { playerEntry.appPreferences() }
+    val adaptiveProbeCoordinator = remember { playerEntry.adaptiveProbeCoordinator() }
+    val adaptarrClient = remember { playerEntry.adaptarrClient() }
+    val reachedSteadyPlayback by exoHolder.reachedSteadyPlayback.collectAsStateWithLifecycle()
+    val adaptarrEnabled by appPreferences.adaptarrEnabled.collectAsStateWithLifecycle(initialValue = false)
+    val adaptarrBaseUrl by appPreferences.adaptarrBaseUrl.collectAsStateWithLifecycle(initialValue = "")
+    val adaptarrToken by appPreferences.adaptarrToken.collectAsStateWithLifecycle(initialValue = "")
+    val adaptiveQualityMode by appPreferences.adaptiveQualityMode.collectAsStateWithLifecycle(initialValue = AdaptiveQualityMode.Off)
+    val adaptiveMaxHeight by appPreferences.adaptiveMaxHeight.collectAsStateWithLifecycle(initialValue = 1080)
+    val adaptiveCellularMaxHeight by appPreferences.adaptiveCellularMaxHeight.collectAsStateWithLifecycle(initialValue = 720)
+    val adaptiveNetworkIdentity by adaptiveProbeCoordinator.defaultNetworkIdentity.collectAsStateWithLifecycle()
     // Cast Connect (GH #33) sender. isCasting drives the local-vs-remote swap:
     // while a cast session is connected we stop the local codec and mirror the
     // channel identity to the Android-TV receiver instead of playing here.
@@ -785,6 +813,126 @@ fun PlayerScreen(
     val followLifecycleOwner = LocalLifecycleOwner.current
     val isDispatcharrLive = !isCatchupMode && currentChannel?.dispatcharrChannelId != null &&
         currentChannel?.id?.startsWith("disp:") == true
+    var sessionQuality by remember(currentChannel?.id) { mutableStateOf<SessionOutputProfileAlpha?>(null) }
+    var sessionQualityInFlight by remember(currentChannel?.id) { mutableStateOf(false) }
+    val sessionQualityAllowed = isDispatcharrLive && !isRemote && !exoHolder.isTimeshifting
+    fun switchSessionQuality(profileId: Int?) {
+        val ch = currentChannel ?: return
+        if (!sessionQualityAllowed || sessionQualityInFlight) return
+        val candidate = sessionQuality ?: SessionOutputProfileAlpha(ch.url, isTrustedDispatcharrChannel = true)
+        val prepared = if (profileId == null) candidate.prepareRestore() else candidate.prepareSelect(profileId) ?: return
+        sessionQualityInFlight = true
+        scope.launch {
+            try {
+                if (currentChannel?.id != ch.id || isRemote || exoHolder.isTimeshifting) return@launch
+                val ran = exoHolder.reprimeWithKeepalive(
+                    url = prepared.url, title = ch.name, subtitle = nowProgramme?.title.orEmpty(), bypassCooldown = true,
+                )
+                if (ran && currentChannel?.id == ch.id && !isRemote && !exoHolder.isTimeshifting &&
+                    candidate.commit(prepared, true) != null
+                ) sessionQuality = candidate.takeIf { profileId != null }
+            } finally { sessionQualityInFlight = false }
+        }
+    }
+    val automaticController = remember { AutomaticSessionQualityController() }
+    val automaticTransport = when (adaptiveNetworkIdentity.transport) {
+        AdaptiveTransport.Wifi -> AutomaticSessionTransport.Wifi
+        AdaptiveTransport.Ethernet -> AutomaticSessionTransport.Ethernet
+        AdaptiveTransport.Cellular -> AutomaticSessionTransport.Cellular
+        AdaptiveTransport.Other -> AutomaticSessionTransport.Other
+        AdaptiveTransport.None -> AutomaticSessionTransport.None
+    }
+    val automaticMode = when (adaptiveQualityMode) {
+        AdaptiveQualityMode.Auto -> AutomaticSessionQualityMode.Auto
+        AdaptiveQualityMode.Recommend -> AutomaticSessionQualityMode.Recommend
+        AdaptiveQualityMode.Off -> AutomaticSessionQualityMode.Off
+    }
+    val automaticEligibility = AutomaticSessionEligibility(
+        isTrustedLocalLive = isDispatcharrLive,
+        isCatchup = isCatchupMode,
+        isTimeshift = exoHolder.isTimeshifting,
+        isRemote = isRemote,
+    )
+    val automaticFingerprint = AutomaticSessionQualityFingerprint(
+        channelId = currentChannel?.id.orEmpty(),
+        baseSourceFingerprint = "dispatcharr:${currentChannel?.dispatcharrChannelId ?: currentChannel?.id.orEmpty()}",
+        mode = automaticMode,
+        eligibility = automaticEligibility,
+        transport = automaticTransport,
+    )
+    var automaticAttempted by remember(automaticFingerprint, adaptarrEnabled, adaptarrBaseUrl, adaptarrToken) {
+        mutableStateOf(false)
+    }
+    LaunchedEffect(
+        automaticFingerprint, adaptarrEnabled, adaptarrBaseUrl, adaptarrToken,
+        adaptiveMaxHeight, adaptiveCellularMaxHeight, reachedSteadyPlayback, sessionQualityInFlight,
+    ) {
+        automaticController.beginAutomaticTransportTransition(automaticFingerprint)
+        if (automaticAttempted || !adaptarrEnabled || automaticMode != AutomaticSessionQualityMode.Auto ||
+            adaptarrBaseUrl.isBlank() || adaptarrToken.isBlank() || !automaticEligibility.isEligible ||
+            !reachedSteadyPlayback || sessionQualityInFlight || exoHolder.isReprimeInFlight
+        ) return@LaunchedEffect
+        automaticAttempted = true
+        val probe = adaptiveProbeCoordinator.probeForAutomaticSession(adaptarrBaseUrl, adaptarrToken)
+        val fresh = (probe as? AdaptiveProbeResult.Success)
+            ?.takeIf { it.source == com.aeriotv.android.core.network.adaptarr.AdaptiveProbeSource.Fresh }
+            ?.measurement ?: return@LaunchedEffect
+        if (automaticController.snapshot.fingerprint != automaticFingerprint) return@LaunchedEffect
+        val configuration = try {
+            adaptarrClient.configuration(adaptarrBaseUrl, adaptarrToken)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return@LaunchedEffect
+        }
+        if (automaticController.snapshot.fingerprint != automaticFingerprint) return@LaunchedEffect
+        val profiles = configuration.profiles.values.map { profile ->
+            AutomaticSessionOutputProfile(
+                id = profile.id,
+                height = profile.height,
+                mode = if (profile.mode == com.aeriotv.android.core.network.adaptarr.AdaptarrProfileMode.Transcode) {
+                    AutomaticSessionProfileMode.Transcode
+                } else AutomaticSessionProfileMode.Passthrough,
+                minimumThroughputBps = profile.minimumThroughputBps,
+            )
+        }
+        val decision = AutomaticSessionQualityPolicy.decide(
+            AutomaticSessionQualityInput(
+                mode = automaticMode,
+                eligibility = automaticEligibility,
+                transport = automaticTransport,
+                caps = AutomaticSessionQualityCaps(adaptiveMaxHeight, adaptiveCellularMaxHeight),
+                probe = AutomaticSessionProbe.Fresh(fresh.measuredThroughputBps),
+                profiles = profiles,
+            ),
+        )
+        val authorization = automaticController.prepareAutomatic(automaticFingerprint, decision)
+            ?: return@LaunchedEffect
+        val candidate = sessionQuality ?: SessionOutputProfileAlpha(
+            originalUrl = currentChannel?.url.orEmpty(), isTrustedDispatcharrChannel = isDispatcharrLive,
+        )
+        val prepared = when (decision) {
+            is AutomaticSessionQualityDecision.OutputProfile -> candidate.prepareSelect(decision.id)
+            AutomaticSessionQualityDecision.Source -> candidate.prepareRestore()
+            AutomaticSessionQualityDecision.NoChange -> null
+        } ?: return@LaunchedEffect
+        val ch = currentChannel ?: return@LaunchedEffect
+        sessionQualityInFlight = true
+        scope.launch {
+            try {
+                val ran = exoHolder.reprimeWithKeepalive(
+                    url = prepared.url, title = ch.name, subtitle = nowProgramme?.title.orEmpty(), bypassCooldown = true,
+                    beforePlay = {
+                        automaticController.isCurrentForReprime(authorization) &&
+                            currentChannel?.id == ch.id && !isRemote && !exoHolder.isTimeshifting
+                    },
+                )
+                if (automaticController.commit(authorization, ran) && candidate.commit(prepared, ran) != null) {
+                    sessionQuality = candidate.takeIf { decision is AutomaticSessionQualityDecision.OutputProfile }
+                }
+            } finally { sessionQualityInFlight = false }
+        }
+    }
     LaunchedEffect(currentChannel?.id, isDispatcharrLive) {
         if (!isDispatcharrLive) return@LaunchedEffect
         val ch = currentChannel ?: return@LaunchedEffect
@@ -1508,6 +1656,10 @@ fun PlayerScreen(
             playbackSpeedSheetState = playbackSpeedSheetState,
             multiviewPickerOpenState = multiviewPickerOpenState,
             chromeMenuOpenState = chromeMenuOpenState,
+            sessionQualityAvailable = sessionQualityAllowed && !sessionQualityInFlight,
+            activeSessionQualityProfileId = sessionQuality?.state?.outputProfileId,
+            onSelectSessionQuality = { switchSessionQuality(it) },
+            onRestoreSessionQuality = { switchSessionQuality(null) },
             castChooserOpenState = castChooserOpenState,
             audioOnlyState = audioOnlyState,
             sleepEndsAtState = sleepEndsAtState,
@@ -2350,6 +2502,10 @@ private fun LiveRewindChromeSection(
     playbackSpeedSheetState: MutableState<Float?>,
     multiviewPickerOpenState: MutableState<Boolean>,
     chromeMenuOpenState: MutableState<Boolean>,
+    sessionQualityAvailable: Boolean,
+    activeSessionQualityProfileId: Int?,
+    onSelectSessionQuality: (Int) -> Unit,
+    onRestoreSessionQuality: () -> Unit,
     castChooserOpenState: MutableState<Boolean>,
     audioOnlyState: MutableState<Boolean>,
     sleepEndsAtState: MutableState<Long?>,
@@ -2597,6 +2753,10 @@ private fun LiveRewindChromeSection(
             val player = exoHolder.player ?: return@PlayerChromeOverlay
             playbackSpeedSheet = player.readSpeed()
         },
+        sessionQualityAvailable = sessionQualityAvailable,
+        activeSessionQualityProfileId = activeSessionQualityProfileId,
+        onSelectSessionQuality = onSelectSessionQuality,
+        onRestoreSessionQuality = onRestoreSessionQuality,
         aspectModeLabel = when (aspectMode) {
             "zoom" -> "Zoom"
             "fill" -> "Fill"
@@ -2868,4 +3028,7 @@ interface PlayerScreenEntryPoint {
     fun companionRemote(): com.aeriotv.android.core.cast.companion.CompanionRemoteController
     fun companionDiscovery(): com.aeriotv.android.core.cast.companion.CompanionDiscovery
     fun companionHost(): com.aeriotv.android.core.cast.companion.CompanionHostController
+    fun appPreferences(): com.aeriotv.android.core.preferences.AppPreferences
+    fun adaptiveProbeCoordinator(): com.aeriotv.android.core.network.adaptarr.AdaptiveProbeCoordinator
+    fun adaptarrClient(): com.aeriotv.android.core.network.adaptarr.AdaptarrClient
 }
